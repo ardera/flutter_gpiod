@@ -1,0 +1,17 @@
+name: flutter_gpiod
+description: Flutter Library for accessing libgpiod on linux.
+version: 0.1.0
+homepage: https://ardera.dev/
+repository: https://github.com/ardera/flutter_gpiod
+
+environment:
+  sdk: ">=2.2.0 <3.0.0"
+
+dependencies:
+  mutex: ^1.0.3
+  flutter:
+    sdk: flutter
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
