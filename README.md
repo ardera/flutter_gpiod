@@ -2,8 +2,8 @@
 
 A library for GPIO access on linux using libgpiod.
 
-Currently, `flutter_gpiod` is only supported when using [`flutter-pi`](https://github.com/ardera/flutter-pi).
-It will not work on linux desktop or any other platform.
+Currently, `flutter_gpiod` is only supports [flutter-pi](https://github.com/ardera/flutter-pi) as a platform.
+It will _not_ work on linux desktop or any other platform.
 
 You need to have `libgpiod.so` on your system for it to work.
 You can install it using `sudo apt install gpiod`.
