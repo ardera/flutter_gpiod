@@ -32,14 +32,16 @@ class _FlutterGpiodTestAppState extends State<FlutterGpiodTestApp> {
     ///
     /// I recommend finding the chip you want
     /// based on the chip label, as is done here.
-    /// 
+    ///
     /// In this example, we search for the main Raspberry Pi GPIO chip,
     /// which has the label `pinctrl-bcm2835`, and then retrieve the line
     /// with index 23 of it. So [line] is GPIO pin BCM 23.
-    final line = chips.singleWhere((chip) => chip.label == 'pinctrl-bcm2835').lines[23];
+    final line =
+        chips.singleWhere((chip) => chip.label == 'pinctrl-bcm2835').lines[23];
 
     /// Request BCM 23 as output.
-    await line.requestOutput(consumer: "flutter_gpiod test", initialValue: true);
+    await line.requestOutput(
+        consumer: "flutter_gpiod test", initialValue: true);
 
     /// Pulse the line.
     /// Set it to inactive. (so low voltage = GND)
@@ -53,9 +55,8 @@ class _FlutterGpiodTestAppState extends State<FlutterGpiodTestApp> {
     /// Now we're listening for falling and rising edge events
     /// on BCM 23.
     await line.requestInput(
-      consumer: "flutter_gpiod input test",
-      triggers: {SignalEdge.falling, SignalEdge.rising}
-    );
+        consumer: "flutter_gpiod input test",
+        triggers: {SignalEdge.falling, SignalEdge.rising});
 
     /// Log line events for eternity.
     await for (final event in line.onEvent) {
@@ -76,11 +77,10 @@ class _FlutterGpiodTestAppState extends State<FlutterGpiodTestApp> {
   Widget build(BuildContext context) {
     return MaterialApp(
       home: Scaffold(
-        appBar: AppBar(
-          title: const Text('flutter_gpiod Test App'),
-        ),
-        body: Container()
-      ),
+          appBar: AppBar(
+            title: const Text('flutter_gpiod Test App'),
+          ),
+          body: Container()),
     );
   }
 }
