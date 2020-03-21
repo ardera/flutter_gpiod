@@ -10,7 +10,7 @@ environment:
 dependencies:
   mutex: ^1.0.3
   meta: ^1.1.8
-  async: ^2.4.1
+  async: ^2.4.0
   flutter:
     sdk: flutter
 

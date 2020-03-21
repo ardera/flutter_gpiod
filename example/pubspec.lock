@@ -63,7 +63,7 @@ packages:
     source: sdk
     version: "0.0.0"
   flutter_gpiod:
-    dependency: "direct dev"
+    dependency: "direct main"
     description:
       path: ".."
       relative: true

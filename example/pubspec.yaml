@@ -2,20 +2,18 @@ name: flutter_gpiod_example
 description: Demonstrates how to use the flutter_gpiod plugin.
 publish_to: 'none'
 
-
 environment:
   sdk: ">=2.2.0 <3.0.0"
 
 dependencies:
+  flutter_gpiod:
+    path: ../
   flutter:
     sdk: flutter
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
-
-  flutter_gpiod:
-    path: ../
 
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec
