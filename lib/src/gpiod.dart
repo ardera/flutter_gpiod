@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:mutex/mutex.dart';
 import 'package:meta/meta.dart';
+import 'package:async/async.dart';
 
 import 'package:flutter/services.dart' show EventChannel, MethodChannel, StandardMethodCodec;
 
@@ -36,9 +37,9 @@ enum SignalEdge {
 
 @immutable class _GlobalSignalEvent {
   final int lineHandle;
-  final SignalEvent lineEvent;
+  final SignalEvent signalEvent;
 
-  const _GlobalSignalEvent(this.lineHandle, this.lineEvent);
+  const _GlobalSignalEvent(this.lineHandle, this.signalEvent);
 
   factory _GlobalSignalEvent._fromList(List list) {
     return _GlobalSignalEvent(
@@ -48,7 +49,7 @@ enum SignalEdge {
   }
 
   String toString() {
-    return "_GpiodEvent(lineHandle: $lineHandle, lineEvent: $lineEvent)";
+    return "_GpiodEvent(lineHandle: $lineHandle, lineEvent: $signalEvent)";
   }
 }
 
@@ -173,78 +174,31 @@ enum SignalEdge {
 /// 
 /// Starting-point for querying gpio chips or lines,
 /// and finding the line you want to control.
-/// 
-/// _Must_ be initialized using [FlutterGpiod.initialize]
-/// or [FlutterGpiod.ensureInitialized]
-/// before you can start using it.
 class FlutterGpiod {
-  final List<GpioChip> _chips;
-  final bool _supportsBias;
-  final bool _supportsLineReconfiguration;
-  
+  FlutterGpiod._internal(this.chips, this.supportsBias, this.supportsLineReconfiguration);
+
   static FlutterGpiod _instance;
 
-  FlutterGpiod._(this._chips, this._supportsBias, this._supportsLineReconfiguration);
+  /// The list of GPIO chips attached to this system.
+  final List<GpioChip> chips;
 
-  /// Whether [FlutterGpiod] is already initialized.
-  static bool get initialized => _instance != null;
+  /// Whether setting and getting GPIO line bias is supported.
+  /// 
+  /// See [GpioLine.request] and [GpioLine.reconfigure].
+  final bool supportsBias;
 
-  /// Get's the List of GPIO chips attached to this system.
+  /// Whether GPIO line reconfiguration is supported.
   /// 
-  /// FlutterGpiod must be initialized using [initialize] or 
-  /// [ensureInitialized] before this can be called.
-  static List<GpioChip> get chips {
-    assert(initialized);
-    return _instance._chips;
-  }
-  
-  /// Returns true if the platform supports setting the
-  /// line bias in [GpioLine.request] or [GpioLine.reconfigure].
-  /// 
-  /// This needs at least [libgpiod](https://git.kernel.org/pub/scm/libs/libgpiod/libgpiod.git) `v1.5`
-  /// and linux kernel `v5.5` to work.
-  /// It's not supported by Raspbian Buster right now.
-  /// 
-  /// FlutterGpiod must be initialized using [initialize] or 
-  /// [ensureInitialized] before this can be called.
-  static bool get supportsBias {
-    assert(initialized);
-    return _instance._supportsBias;
-  }
-  
-  /// Returns true if the platform supports reconfiguring
-  /// the line after it was requested using [GpioLine.reconfigure].
-  /// 
-  /// This needs at least [libgpiod](https://git.kernel.org/pub/scm/libs/libgpiod/libgpiod.git) `v1.5`
-  /// and linux kernel `v5.5` to work.
-  /// It's not supported by Raspbian Buster right now, either.
-  /// 
-  /// FlutterGpiod must be initialized using [initialize] or 
-  /// [ensureInitialized] before this can be called.
-  static bool get supportsLineReconfiguration {
-    assert(initialized);
-    return _instance._supportsLineReconfiguration;
-  }
+  /// See [GpioLine.reconfigure].
+  final bool supportsLineReconfiguration;
 
-  static Stream<_GlobalSignalEvent> _stream;
-  static Stream<_GlobalSignalEvent> get _eventStream {
-    if (_stream == null) {
-      _stream = _FlutterGpiodPlatformSide.receiveBroadcastStream();
-    }
-    return _stream;
-  }
+  Stream<_GlobalSignalEvent> __onGlobalSignalEvent;
 
-  static Stream<SignalEvent> _getLineEventBroadcastStream(int lineHandle) {
-    return _eventStream
-      .where((event) => event.lineHandle == lineHandle)
-      .map((event) => event.lineEvent);
-  }
 
-  /// Initializes [FlutterGpiod].
+  /// Gets the global instance of [FlutterGpiod].
   /// 
-  /// Will throw a [StateError] if [FlutterGpiod] is
-  /// already initialized.
-  static Future<void> initialize() async {
+  /// If none exists, one will be constructed.
+  static Future<FlutterGpiod> getInstance() async {
     if (_instance == null) {
       final List<GpioChip> chips = List.unmodifiable(
         await Future.wait(
@@ -257,16 +211,21 @@ class FlutterGpiod {
       final bias = await _FlutterGpiodPlatformSide.supportsBias();
       final reconfig = await _FlutterGpiodPlatformSide.supportsLineReconfiguration();
 
-      _instance = FlutterGpiod._(chips, bias, reconfig);
-    } else {
-      throw StateError("GpiodPlugin is already initialized");
+      _instance = FlutterGpiod._internal(chips, bias, reconfig);
     }
+
+    return _instance;
   }
 
-  /// Initializes [FlutterGpiod] using [initialize]
-  /// if it's not yet initialized.
-  static FutureOr<void> ensureInitialized() {
-    if (_instance == null) return initialize();
+  Stream<_GlobalSignalEvent> get _onGlobalSignalEvent {
+    __onGlobalSignalEvent ??= _FlutterGpiodPlatformSide.receiveBroadcastStream();
+    return __onGlobalSignalEvent;
+  }
+
+  Stream<SignalEvent> _onSignalEvent(int lineHandle) {
+    return _onGlobalSignalEvent
+      .where((e) => e.lineHandle == lineHandle)
+      .map((e) => e.signalEvent);
   }
 }
 
@@ -445,12 +404,13 @@ class FlutterGpiod {
 /// ```dart
 /// import 'package:flutter_gpiod/flutter_gpiod.dart';
 /// 
-/// // initialize FlutterGpiod
-/// await FlutterGpiod.initialize();
+/// final gpio = await FlutterGpiod.getInstance()
 /// 
 /// // get the line with index 22 from the first chip
-/// final line = FlutterGpiod.chips.first.lines[22];
-/// print("chips.first.lines[22]: $(await line.info)");
+/// final line = gpio.chips.singleWhere(
+///   (chip) => chip.label == 'pinctrl-bcm2835'
+/// );
+/// print("pinctrl-bcm2835, line 22: $(await line.info)");
 /// 
 /// // request is as output and initialize it with false
 /// await line.requestOutput(
@@ -478,34 +438,37 @@ class FlutterGpiod {
 /// 
 /// // print line events for eternity
 /// await for (final event in line.onEvent) {
-///   print("Got GPIO line signal event: $event");
+///   print("gpio line signal event: $event");
 /// }
 /// 
 /// // await line.release();
 /// ```
-/// 
 /// Notice that access to the methods in GpioLine is synchronized.
+/// 
 /// This will throw an error:
 /// ```dart
-/// final line = FlutterGpiod.chips.first.lines[22];
+/// final gpio = await FlutterGpiod.getInstance();
+/// 
+/// final line = gpio.chips.singleWhere(
+///   (chip) => chip.label == 'pinctrl-bcm2835'
+/// );
 /// 
 /// line.requestInput() // notice the missing await
 /// 
-/// print("requested? ${line.requested}"); // this will throw the error.
-/// // the line ownership is undefined until the Future returned by line.requestInput() finishes.
+/// print("is line requested? ${line.requested}"); // this will throw the error.
+/// // The line ownership is undefined until the Future returned by line.requestInput() finishes.
 /// // Because this code doesn't wait until the returned Future completes,
 /// //   the request may still be running when `line.requested` is queried.
 /// ```
 class GpioLine {
+  GpioLine._internal(this._lineHandle, this._requested, this._info, this._triggers, this._value);
+
+  final _mutex = ReadWriteMutex();
   final int _lineHandle;
   bool _requested;
   LineInfo _info;
   Set<SignalEdge> _triggers;
   bool _value;
-
-  final _mutex = ReadWriteMutex();
-
-  GpioLine._(this._lineHandle, this._requested, this._info, this._triggers, this._value);
 
   void _assertNotWriteLocked() {
     if (_mutex.isWriteLocked) {
@@ -533,7 +496,7 @@ class GpioLine {
     final info = await _FlutterGpiodPlatformSide.getLineInfo(lineHandle);
 
     if (info.isRequested) {
-      return GpioLine._(
+      return GpioLine._internal(
         lineHandle,
         true,
         info,
@@ -541,13 +504,14 @@ class GpioLine {
         await _FlutterGpiodPlatformSide.getLineValue(lineHandle)
       );
     } else {
-      return GpioLine._(lineHandle, false, null, const {}, null);
+      return GpioLine._internal(lineHandle, false, null, const {}, null);
     }
   }
 
   /// Returns the line info for this line.
   /// 
-  /// Will return a [LineInfo] synchronously when `requested == true`.
+  /// Will return a [LineInfo] synchronously when `requested == true`
+  /// and no request / reconfiguration / release is going on right now.
   /// Otherwise, returns a `Future<LineInfo>`.
   FutureOr<LineInfo> get info {
     if (_mutex.isWriteLocked == false && _info != null) {
@@ -561,9 +525,9 @@ class GpioLine {
   /// 
   /// Throws a [StateError] when synchronous access is not possible.
   /// Synchronous access is possible when `requested == true` and
-  /// no request / reconfiguration going on right now.
+  /// no request / reconfiguration / release is going on right now.
   /// 
-  /// When the line is requested, [info] will return synchronously,
+  /// When possible, [info] will return synchronously,
   /// but you have to cast it to `LineInfo` every time you want to use it,
   /// which is kinda annoying.
   /// This method does the casting for you.
@@ -589,7 +553,7 @@ class GpioLine {
     return _synchronizedRead(() => _FlutterGpiodPlatformSide.getLineInfo(_lineHandle));
   }
 
-  /// Whether this line is requested right now.
+  /// Whether this line is requested (owned by you) right now.
   /// 
   /// `requested == true` means that you own the line,
   /// and can do things with it.
@@ -616,7 +580,7 @@ class GpioLine {
   }
 
   void _checkSupportsBiasValue(Bias bias) {
-    if ((bias != null) && !FlutterGpiod.supportsBias) {
+    if ((bias != null) && !FlutterGpiod._instance.supportsBias) {
       throw UnsupportedError(
         "Line bias is not supported on this platform."
         "Expected `bias` to be null."
@@ -694,7 +658,7 @@ class GpioLine {
   }
 
   void _checkSupportsLineReconfiguration() {
-    if (!FlutterGpiod.supportsLineReconfiguration) {
+    if (!FlutterGpiod._instance.supportsLineReconfiguration) {
       throw UnsupportedError(
         "Can't reconfigure line because that's not supported by "
         "the underlying version of libgpiod. "
@@ -859,7 +823,7 @@ class GpioLine {
     }
   }
   
-  /// Gets the stream of [SignalEvent]s for this line.
+  /// Gets a broadcast stream of [SignalEvent]s for this line.
   /// 
   /// Note that platforms can and do emit events with same
   /// [SignalEvent.edge] in sequence, with no event
@@ -867,17 +831,25 @@ class GpioLine {
   /// 
   /// So, it often happens that platforms emit events
   /// like this: `rising`, `rising`, `rising`, `falling`, `rising`,
-  /// even though that doesn't seem to make any sense.
+  /// even though that doesn't seem to make any sense
+  /// at first glance.
   Stream<SignalEvent> get onEvent {
-    return FlutterGpiod._getLineEventBroadcastStream(_lineHandle);
+    final completer = StreamCompleter<SignalEvent>();
+
+    _synchronizedRead(
+      () => FlutterGpiod._instance._onSignalEvent(_lineHandle)
+    ).then(
+      (stream) => completer.setSourceStream(stream),
+      onError: (error, stackTrace) => completer.setError(error, stackTrace)
+    );
+
+    return completer.stream;
   }
 
   /// Broadcast stream of signal edges.
   /// 
-  /// Emits a new signal edge every time the GPIO chip
-  /// detects one.
-  Stream<SignalEdge> get onEdge
-    => onEvent.map((e) => e.edge);
+  /// Basically the [onEvent] stream without the timestamp.
+  Stream<SignalEdge> get onEdge => onEvent.map((e) => e.edge);
 
   String toString() {
     final infoStr = _requested? ", info: $infoSync" : "";

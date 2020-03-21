@@ -12,10 +12,10 @@ class FlutterGpiodTestApp extends StatefulWidget {
 
 class _FlutterGpiodTestAppState extends State<FlutterGpiodTestApp> {
   Future<void> _testFlutterGpiod() async {
-    await FlutterGpiod.ensureInitialized();
+    final gpio = await FlutterGpiod.getInstance();
 
     /// Retrieve the list of GPIO chips.
-    final chips = FlutterGpiod.chips;
+    final chips = gpio.chips;
 
     /// Print out all GPIO chips and all lines
     /// for all GPIO chips.
@@ -30,14 +30,13 @@ class _FlutterGpiodTestAppState extends State<FlutterGpiodTestApp> {
     /// Retrieve the line with index 23 of the first chip.
     /// This is BCM pin 23 for the Raspberry Pi.
     ///
-    /// In practice, it's better to find the chip you want
-    /// based on the chip name, it's just a coincidence
-    /// the first chip corresponds to the main Raspberry Pi
-    /// GPIO chip here. So `chips.firstWhere((chip) => chip.name == 'brcm2835-pinctrl')`.
-    ///
-    /// In this case, it's fine because we don't care what
-    /// pin really is behind this gpio line.
-    final line = chips.first.lines[23];
+    /// I recommend finding the chip you want
+    /// based on the chip label, as is done here.
+    /// 
+    /// In this example, we search for the main Raspberry Pi GPIO chip,
+    /// which has the label `pinctrl-bcm2835`, and then retrieve the line
+    /// with index 23 of it. So [line] is GPIO pin BCM 23.
+    final line = chips.singleWhere((chip) => chip.label == 'pinctrl-bcm2835').lines[23];
 
     /// Request BCM 23 as output.
     await line.requestOutput(consumer: "flutter_gpiod test", initialValue: true);
@@ -51,10 +50,10 @@ class _FlutterGpiodTestAppState extends State<FlutterGpiodTestApp> {
 
     await line.release();
 
-    /// Now were listening for falling and rising edge events
+    /// Now we're listening for falling and rising edge events
     /// on BCM 23.
     await line.requestInput(
-      consumer: "flutter_gpiod test",
+      consumer: "flutter_gpiod input test",
       triggers: {SignalEdge.falling, SignalEdge.rising}
     );
 
