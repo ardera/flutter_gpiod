@@ -1,5 +1,8 @@
 name: flutter_gpiod
-description: Flutter Library for accessing libgpiod on linux.
+description:
+  Flutter package for accessing libgpiod on linux.
+  Supports signal edge listening, active state, open source/drain and (if supported by platform) bias.
+  Only works with [flutter-pi](https://github.com/ardera/flutter-pi).
 version: 0.1.0+1
 homepage: https://ardera.dev/
 repository: https://github.com/ardera/flutter_gpiod
