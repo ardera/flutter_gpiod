@@ -1,5 +1,6 @@
 # 📰 NEWS
 - `libgpiod` is no longer required
+- a lot of the `async` stuff has gone away, making it nicer & easier to use
 - The package uses FFI with ioctls now, which should result in lower latency. (The event listener isolate gets signal edge events ~300us after they ocurred, the main isolate after ~1000us)
 - works without flutter-pi now too
 - tested & working on ARM32, but should work on other 32-bit and 64-bit linux platforms too (untested though)
