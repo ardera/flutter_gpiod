@@ -1,4 +1,5 @@
-name: gpiod_generated_bindings
+name: bindings_generator
+description: Generates the FFI bindings for flutter_gpiod
 version: 0.0.1
 
 dependencies:
