@@ -1,0 +1,50 @@
+name: LibCConstants
+output: '../lib/src/bindings/libc_constants.g.dart'
+preamble: |
+  part of bindings;
+  // ignore_for_file: non_constant_identifier_names, camel_case_types, unnecessary_brace_in_string_interps, unused_element
+array-workaround: true
+headers:
+  entry-points:
+    - '/usr/include/sys/ioctl.h'
+    - '/usr/include/sys/types.h'
+    - '/usr/include/sys/stat.h'
+    - '/usr/include/sys/epoll.h'
+    - '/usr/include/errno.h'
+    - '/usr/include/fcntl.h'
+    - '/usr/include/unistd.h'
+  include-directives:
+    - '/usr/include/sys/ioctl.h'
+    - '/usr/include/sys/types.h'
+    - '/usr/include/sys/stat.h'
+    - '/usr/include/sys/epoll.h'
+    - '**errno.h**'
+    - '**fcntl**.h'
+    - '**ioctl**.h'
+    - '**unistd**.h'
+functions:
+  exclude:
+    - '.*'
+macros:
+  include:
+    - 'O.*'
+    - 'EPOLL.*'
+    - 'E.*'
+enums:
+  include:
+    - 'EPOLL.*'
+structs:
+  exclude:
+    - '.*'
+size-map:
+  char: 1
+  unsigned char: 1
+  short: 2
+  unsigned short: 2
+  int: 4
+  unsigned int: 4
+  long: 4
+  unsigned long: 4
+  long long: 8
+  unsigned long long: 8
+  enum: 4
