@@ -1,0 +1,17 @@
+name: 'Gpio'
+output: '../lib/src/bindings/gpio_bindings.g.dart'
+preamble: |
+  part of bindings;
+  // ignore_for_file: non_constant_identifier_names, camel_case_types, unnecessary_brace_in_string_interps, unused_element
+array-workaround: true
+headers:
+  entry-points:
+    - gpio.h
+  include-directives:
+    - gpio.h
+macros:
+  include:
+    - GPIO.*
+structs:
+  include:
+    - gpio.*

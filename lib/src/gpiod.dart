@@ -1,11 +1,14 @@
 import 'dart:async';
+import 'dart:io';
+import 'dart:ffi' as ffi;
+import 'dart:isolate';
 
-import 'package:mutex/mutex.dart';
+import 'package:tuple/tuple.dart';
 import 'package:meta/meta.dart';
-import 'package:async/async.dart';
+import 'package:path/path.dart';
+import 'package:ffi/ffi.dart' as ffi;
 
-import 'package:flutter/services.dart'
-    show EventChannel, MethodChannel, StandardMethodCodec;
+import 'bindings.dart';
 
 /// The direction of a gpiod line.
 enum LineDirection { input, output }
@@ -27,19 +30,14 @@ enum ActiveState { high, low }
 enum SignalEdge { rising, falling }
 
 @immutable
-class _GlobalSignalEvent {
+class GlobalSignalEvent {
+  const GlobalSignalEvent(this.lineHandle, this.signalEvent);
+
   final int lineHandle;
   final SignalEvent signalEvent;
 
-  const _GlobalSignalEvent(this.lineHandle, this.signalEvent);
-
-  factory _GlobalSignalEvent._fromList(List list) {
-    return _GlobalSignalEvent(
-        list[0] as int, SignalEvent._fromList(list.sublist(1)));
-  }
-
   String toString() {
-    return "_GpiodEvent(lineHandle: $lineHandle, lineEvent: $signalEvent)";
+    return "GlobalSignalEvent(lineHandle: $lineHandle, lineEvent: $signalEvent)";
   }
 }
 
@@ -51,6 +49,8 @@ class _GlobalSignalEvent {
 /// (which is given by the kernel)
 @immutable
 class SignalEvent {
+  const SignalEvent(this.edge, this.time);
+
   /// The edge that was detected on the [GpioLine].
   final SignalEdge edge;
 
@@ -58,118 +58,487 @@ class SignalEvent {
   /// linux kernel.
   final DateTime time;
 
-  const SignalEvent._(this.edge, this.time);
-
-  factory SignalEvent._fromList(List list) {
-    final edge = SignalEdge.values.firstWhere((v) => v.toString() == list[0]);
-    final s = list[1][0] as int;
-    final ns = list[1][1] as int;
-
-    final time =
-        DateTime.fromMicrosecondsSinceEpoch(s * 1000000 + (ns / 1000).round());
-
-    return SignalEvent._(edge, time);
-  }
-
   String toString() {
     final edgeStr = edge == SignalEdge.falling ? "falling" : "rising";
     return "SignalEvent(edge: $edgeStr, time: $time)";
   }
 }
 
-/// Provides raw access to the platform-side methods.
-@immutable
-class _FlutterGpiodPlatformSide {
-  static const _methodChannel =
-      MethodChannel("plugins.flutter.io/gpiod", StandardMethodCodec());
-  static const _eventChannel = EventChannel("plugins.flutter.io/gpiod_events");
+void _eventIsolateEntry(Tuple2<SendPort, int> args) {
+  int ok;
 
-  static Stream<_GlobalSignalEvent> receiveBroadcastStream() {
-    return _eventChannel
-        .receiveBroadcastStream()
-        .map((arg) => _GlobalSignalEvent._fromList(arg as List));
-  }
+  final sendPort = args.item1;
+  final epollFd = args.item2;
 
-  static Future<int> getNumChips() async {
-    return (await _methodChannel.invokeMethod("getNumChips", null)) as int;
-  }
+  final libc = LibC(ffi.DynamicLibrary.open("libc.so.6"));
 
-  static Future<Map<String, dynamic>> getChipDetails(int chipIndex) async {
-    return await _methodChannel.invokeMapMethod("getChipDetails", chipIndex);
-  }
+  final maxEpollEvents = 64;
+  final epollEvents = ffi.allocate<epoll_event>(count: maxEpollEvents);
 
-  static Future<int> getLineHandle(int chipIndex, int lineIndex) async {
-    return (await _methodChannel
-        .invokeMethod("getLineHandle", <int>[chipIndex, lineIndex])) as int;
-  }
+  final maxEvents = 16;
+  final events = ffi.allocate<gpioevent_data>(count: maxEvents);
 
-  static Future<LineInfo> getLineInfo(int lineHandle) async {
-    return LineInfo._fromMap(await _methodChannel
-        .invokeMapMethod<String, dynamic>("getLineDetails", lineHandle));
-  }
+  while (true) {
+    ok = libc.epoll_wait(
+        epollFd, epollEvents.cast<epoll_event>(), maxEpollEvents, 0);
+    if (ok < 0) {
+      ffi.free(epollEvents);
+      ffi.free(events);
+      throw OSError("Could not wait for GPIO events (epoll_wait)");
+    }
 
-  static Future<void> requestLine(
-      {int lineHandle,
-      String consumer,
-      LineDirection direction,
-      OutputMode outputMode,
-      Bias bias,
-      ActiveState activeState,
-      Set<SignalEdge> triggers,
-      bool initialValue}) async {
-    await _methodChannel.invokeMethod("requestLine", {
-      'lineHandle': lineHandle,
-      'consumer': consumer,
-      'direction': direction.toString(),
-      'outputMode': outputMode?.toString(),
-      'bias': bias?.toString(),
-      'activeState': activeState.toString(),
-      'triggers': triggers?.map((t) => t.toString())?.toList(),
-      'initialValue': initialValue
-    });
-  }
+    final convertedEvents = <List<int>>[];
+    var nReady = ok;
+    for (var i = 0; (i < maxEpollEvents) && (nReady > 0); i++) {
+      final epollEvent = epollEvents.elementAt(i).ref;
 
-  static Future<void> releaseLine(int lineHandle) async {
-    await _methodChannel.invokeMethod("releaseLine", lineHandle);
-  }
+      if (epollEvent.events != 0) {
+        ok = libc.read(epollEvent.userdata, events.cast<ffi.Void>(),
+            maxEvents * ffi.sizeOf<gpioevent_data>());
+        if (ok < 0) {
+          ffi.free(epollEvents);
+          ffi.free(events);
+          throw OSError(
+              "Could not read GPIO events from event line fd (read)");
+        } else if (ok == 0) {
+          libc.epoll_ctl(
+              epollFd, EPOLL_CTL_DEL, epollEvent.userdata, ffi.nullptr);
+        }
 
-  static Future<void> reconfigureLine(
-      {int lineHandle,
-      LineDirection direction,
-      OutputMode outputMode,
-      Bias bias,
-      ActiveState activeState,
-      bool initialValue}) async {
-    await _methodChannel.invokeMethod("reconfigureLine", {
-      'lineHandle': lineHandle,
-      'direction': direction.toString(),
-      'outputMode': outputMode?.toString(),
-      'bias': bias?.toString(),
-      'activeState': activeState.toString(),
-      'initialValue': initialValue
-    });
-  }
+        final nEventsRead = ok / ffi.sizeOf<gpioevent_data>();
+        for (var j = 0; j < nEventsRead; j++) {
+          final event = events.elementAt(j).ref;
+          convertedEvents
+              .add(<int>[epollEvent.userdata, event.id, event.timestamp]);
+        }
 
-  static Future<bool> getLineValue(int lineHandle) async {
-    return (await _methodChannel.invokeMethod("getLineValue", lineHandle))
-        as bool;
-  }
+        nReady--;
+      }
+    }
 
-  static Future<void> setLineValue(int lineHandle, bool value) async {
-    await _methodChannel.invokeMethod("setLineValue", [lineHandle, value]);
-  }
-
-  static Future<bool> supportsBias() async {
-    return (await _methodChannel.invokeMethod("supportsBias")) as bool;
-  }
-
-  static Future<bool> supportsLineReconfiguration() async {
-    return (await _methodChannel.invokeMethod("supportsLineReconfiguration"))
-        as bool;
+    if (convertedEvents.isNotEmpty) {
+      sendPort.send(convertedEvents);
+    }
   }
 }
 
-/// Global interface to libgpiod.
+/// Provides raw access to the platform-side methods.
+class _FlutterGpiodPlatformSide {
+  _FlutterGpiodPlatformSide._construct(this.libc, this._numChips,
+      this._chipIndexToFd, this._epollFd, this._eventReceivePort);
+
+  factory _FlutterGpiodPlatformSide._internal() {
+    final libc = LibC(ffi.DynamicLibrary.open("libc.so.6"));
+
+    final numChips = Directory("/dev")
+        .listSync(followLinks: false, recursive: false)
+        .where((element) => basename(element.path).startsWith("gpiochip"))
+        .length;
+
+    final chipIndexToFd = <int, int>{};
+
+    for (var i = 0; i < numChips; i++) {
+      final pathPtr = ffi.Utf8.toUtf8("/dev/gpiochip$i");
+
+      final fd = libc.open(pathPtr.cast<ffi.Int8>(), O_RDWR | O_CLOEXEC);
+
+      ffi.free(pathPtr);
+
+      if (fd < 0) {
+        chipIndexToFd.values.forEach((fd) => libc.close(fd));
+        throw FileSystemException(
+            "Could not open GPIO chip $i", "/dev/gpiochip$i");
+      }
+
+      chipIndexToFd[i] = fd;
+    }
+
+    final epollFd = libc.epoll_create1(0);
+    if (epollFd < 0) {
+      throw OSError(
+          "Could not create epoll instance. (epoll_create1)");
+    }
+
+    final receivePort = ReceivePort();
+
+    Isolate.spawn(_eventIsolateEntry, Tuple2(receivePort.sendPort, epollFd))
+        .catchError((err, stackTrace) {
+      print(
+          "Could not launch GPIO event listener isolate. $err\nStackTrace: $stackTrace");
+    });
+
+    return _FlutterGpiodPlatformSide._construct(
+        libc, numChips, chipIndexToFd, epollFd, receivePort);
+  }
+
+  final LibC libc;
+  final int _numChips;
+  final Map<int, int> _chipIndexToFd;
+  final int _epollFd;
+  final ReceivePort _eventReceivePort;
+  final _requestedLines = <int>{};
+  final _lineHandleToLineHandleFd = <int, int>{};
+  final _lineHandleToLineEventFd = <int, int>{};
+
+  Stream<GlobalSignalEvent> _eventStream;
+
+  static _FlutterGpiodPlatformSide _instance;
+
+  static _FlutterGpiodPlatformSide get instance {
+    if (_instance == null) {
+      _instance = _FlutterGpiodPlatformSide._internal();
+    }
+    return _instance;
+  }
+
+  void _ioctl(int fd, int request, ffi.Pointer argp) {
+    final result = libc.ioctlPointer(fd, request, argp);
+    if (result < 0) {
+      throw OSError("GPIO ioctl failed");
+    }
+  }
+
+  int _chipIndexFromLineHandle(int lineHandle) {
+    return lineHandle >> 32;
+  }
+
+  int _chipFdFromLineHandle(int lineHandle) {
+    return _chipIndexToFd[_chipIndexFromLineHandle(lineHandle)];
+  }
+
+  int _lineIndexFromLineHandle(int lineHandle) {
+    return lineHandle & 0xFFFFFFFF;
+  }
+
+  Stream<GlobalSignalEvent> get eventStream {
+    _eventStream ??=
+        _eventReceivePort.cast<List<List<int>>>().expand((element) {
+      element.sort((a, b) => a[2].compareTo(b[2]));
+      return element;
+    }).map((list) {
+      final lineHandle = _lineHandleToLineHandleFd.entries
+          .singleWhere((e) => e.value == list[0])
+          .key;
+      final edge = list[1] == GPIOEVENT_EVENT_RISING_EDGE
+          ? SignalEdge.rising
+          : SignalEdge.falling;
+      final dateTime = DateTime.fromMicrosecondsSinceEpoch(list[2] ~/ 1000);
+
+      return GlobalSignalEvent(lineHandle, SignalEvent(edge, dateTime));
+    });
+
+    return _eventStream;
+  }
+
+  int getNumChips() {
+    return _numChips;
+  }
+
+  Map<String, dynamic> getChipDetails(int chipIndex) {
+    final struct = newStruct<gpiochip_info>();
+
+    Map<String, dynamic> map;
+
+    try {
+      _ioctl(
+          _chipIndexToFd[chipIndex], GPIO_GET_CHIPINFO_IOCTL, struct.addressOf);
+
+      map = <String, dynamic>{
+        'name':
+            stringFromInlineArray(struct.name.length, (i) => struct.name[i]),
+        'label':
+            stringFromInlineArray(struct.label.length, (i) => struct.label[i]),
+        'numLines': struct.lines
+      };
+    } finally {
+      ffi.free(struct.addressOf);
+    }
+
+    return map;
+  }
+
+  int getLineHandle(int chipIndex, int lineIndex) {
+    return (chipIndex << 32) + lineIndex;
+  }
+
+  LineInfo getLineInfo(int lineHandle) {
+    final fd = _chipFdFromLineHandle(lineHandle);
+    final offset = _lineIndexFromLineHandle(lineHandle);
+
+    final struct = newStruct<gpioline_info>();
+    struct.line_offset = offset;
+
+    LineInfo info;
+
+    try {
+      _ioctl(fd, GPIO_GET_LINEINFO_IOCTL, struct.addressOf);
+
+      final isOut = struct.flags & GPIOLINE_FLAG_IS_OUT > 0;
+      final isOpenDrain = struct.flags & GPIOLINE_FLAG_OPEN_DRAIN > 0;
+      final isOpenSource = struct.flags & GPIOLINE_FLAG_OPEN_SOURCE > 0;
+      final isActiveLow = struct.flags & GPIOLINE_FLAG_ACTIVE_LOW > 0;
+      final isKernel = struct.flags & GPIOLINE_FLAG_KERNEL > 0;
+
+      info = LineInfo(
+        name: stringFromInlineArray(struct.name.length, (i) => struct.name[i]),
+        consumer: stringFromInlineArray(
+            struct.name.length, (i) => struct.consumer[i]),
+        direction: isOut ? LineDirection.output : LineDirection.input,
+        outputMode: isOpenDrain
+            ? OutputMode.openDrain
+            : isOpenSource ? OutputMode.openSource : OutputMode.pushPull,
+        bias: Bias.disable,
+        activeState: isActiveLow ? ActiveState.low : ActiveState.high,
+        isUsed: isKernel || _requestedLines.contains(lineHandle),
+        isRequested: _requestedLines.contains(lineHandle),
+      );
+    } finally {
+      ffi.free(struct.addressOf);
+    }
+
+    return info;
+  }
+
+  void requestLine(
+      {@required int lineHandle,
+      @required String consumer,
+      LineDirection direction,
+      OutputMode outputMode,
+      Bias bias,
+      ActiveState activeState = ActiveState.high,
+      Set<SignalEdge> triggers = const {},
+      bool initialValue}) {
+    assert(lineHandle != null);
+    assert(triggers != null);
+    assert(activeState != null);
+
+    final isEvent = triggers.isNotEmpty;
+    final isInput = isEvent || direction == LineDirection.input;
+
+    if (isEvent) {
+      assert(direction == null || direction == LineDirection.input);
+    }
+
+    if (isInput) {
+      assert(outputMode == null);
+      assert(initialValue == null);
+    } else {
+      assert(outputMode != null);
+      assert(initialValue != null);
+    }
+
+    final fd = _chipFdFromLineHandle(lineHandle);
+    final offset = _lineIndexFromLineHandle(lineHandle);
+
+    if (!isEvent) {
+      final request = newStruct<gpiohandle_request>();
+
+      request.lines = 1;
+      request.lineoffsets[0] = offset;
+
+      writeStringToArrayHelper(consumer, request.consumer_label.length,
+          (i, v) => request.consumer_label[i] = v);
+
+      request.flags = (direction == LineDirection.input
+              ? GPIOHANDLE_REQUEST_INPUT
+              : GPIOHANDLE_REQUEST_OUTPUT) |
+          (outputMode == OutputMode.openDrain
+              ? GPIOHANDLE_REQUEST_OPEN_DRAIN
+              : outputMode == OutputMode.openSource
+                  ? GPIOHANDLE_REQUEST_OPEN_SOURCE
+                  : 0) |
+          (bias == Bias.disable
+              ? GPIOHANDLE_REQUEST_BIAS_DISABLE
+              : bias == Bias.pullDown
+                  ? GPIOHANDLE_REQUEST_BIAS_PULL_DOWN
+                  : bias == Bias.pullUp ? GPIOHANDLE_REQUEST_BIAS_PULL_UP : 0) |
+          (activeState == ActiveState.low ? GPIOHANDLE_REQUEST_ACTIVE_LOW : 0);
+
+      if (initialValue != null) {
+        request.default_values[0] = initialValue ? 1 : 0;
+      }
+
+      try {
+        _ioctl(fd, GPIO_GET_LINEHANDLE_IOCTL, request.addressOf);
+        _requestedLines.add(lineHandle);
+        _lineHandleToLineHandleFd[lineHandle] = request.fd;
+      } finally {
+        ffi.free(request.addressOf);
+      }
+    } else {
+      final request = newStruct<gpioevent_request>();
+
+      request.lineoffset = offset;
+      writeStringToArrayHelper(consumer, request.consumer_label.length,
+          (i, v) => request.consumer_label[i] = v);
+      request.handleflags = GPIOHANDLE_REQUEST_INPUT |
+          (bias == Bias.disable
+              ? GPIOHANDLE_REQUEST_BIAS_DISABLE
+              : bias == Bias.pullDown
+                  ? GPIOHANDLE_REQUEST_BIAS_PULL_DOWN
+                  : bias == Bias.pullUp ? GPIOHANDLE_REQUEST_BIAS_PULL_UP : 0) |
+          (activeState == ActiveState.low ? GPIOHANDLE_REQUEST_ACTIVE_LOW : 0);
+      request.eventflags = triggers == {SignalEdge.rising}
+          ? GPIOEVENT_REQUEST_RISING_EDGE
+          : triggers == {SignalEdge.falling}
+              ? GPIOEVENT_REQUEST_FALLING_EDGE
+              : GPIOEVENT_REQUEST_BOTH_EDGES;
+
+      try {
+        _ioctl(fd, GPIO_GET_LINEEVENT_IOCTL, request.addressOf);
+
+        _requestedLines.add(lineHandle);
+        _lineHandleToLineEventFd[lineHandle] = request.fd;
+
+        final epollEvent = newStruct<epoll_event>();
+
+        epollEvent.events = EPOLLIN | EPOLLPRI;
+        epollEvent.userdata = request.fd;
+
+        final result = libc.epoll_ctl(_epollFd, EPOLL_CTL_ADD, request.fd,
+            epollEvent.addressOf.cast<epoll_event>());
+
+        ffi.free(epollEvent.addressOf);
+
+        if (result < 0) {
+          releaseLine(lineHandle);
+          throw OSError(
+              "Could not add GPIO line event fd to epoll instance (epoll_ctl)",
+              );
+        }
+      } finally {
+        ffi.free(request.addressOf);
+      }
+    }
+  }
+
+  void releaseLine(int lineHandle) {
+    assert(_requestedLines.contains(lineHandle));
+
+    libc.close(_lineHandleToLineHandleFd[lineHandle]);
+
+    _requestedLines.remove(lineHandle);
+  }
+
+  void reconfigureLine(
+      {@required int lineHandle,
+      @required LineDirection direction,
+      OutputMode outputMode,
+      Bias bias,
+      ActiveState activeState = ActiveState.high,
+      bool initialValue}) async {
+    assert(_requestedLines.contains(lineHandle));
+    assert(_lineHandleToLineHandleFd.containsKey(lineHandle));
+
+    assert(lineHandle != null);
+    assert(activeState != null);
+
+    if (direction == LineDirection.input) {
+      assert(outputMode == null);
+      assert(initialValue == null);
+    } else {
+      assert(outputMode != null);
+      assert(initialValue != null);
+    }
+
+    final request = newStruct<gpiohandle_config>();
+
+    request.flags = (direction == LineDirection.input
+            ? GPIOHANDLE_REQUEST_INPUT
+            : GPIOHANDLE_REQUEST_OUTPUT) |
+        (outputMode == OutputMode.openDrain
+            ? GPIOHANDLE_REQUEST_OPEN_DRAIN
+            : outputMode == OutputMode.openSource
+                ? GPIOHANDLE_REQUEST_OPEN_SOURCE
+                : 0) |
+        (bias == Bias.disable
+            ? GPIOHANDLE_REQUEST_BIAS_DISABLE
+            : bias == Bias.pullDown
+                ? GPIOHANDLE_REQUEST_BIAS_PULL_DOWN
+                : bias == Bias.pullUp ? GPIOHANDLE_REQUEST_BIAS_PULL_UP : 0) |
+        (activeState == ActiveState.low ? GPIOHANDLE_REQUEST_ACTIVE_LOW : 0);
+
+    if (initialValue != null) {
+      request.default_values[0] = initialValue ? 1 : 0;
+    }
+
+    try {
+      _ioctl(_lineHandleToLineHandleFd[lineHandle], GPIOHANDLE_SET_CONFIG_IOCTL,
+          request.addressOf);
+    } finally {
+      ffi.free(request.addressOf);
+    }
+  }
+
+  bool getLineValue(int lineHandle) {
+    assert(lineHandle != null);
+    assert(_requestedLines.contains(lineHandle));
+
+    final fd = _lineHandleToLineHandleFd[lineHandle] ??
+        _lineHandleToLineEventFd[lineHandle];
+    assert(fd != null);
+
+    final struct = newStruct<gpiohandle_data>();
+
+    bool result;
+
+    try {
+      _ioctl(fd, GPIOHANDLE_GET_LINE_VALUES_IOCTL, struct.addressOf);
+      result = struct.values[0] != 0;
+    } finally {
+      ffi.free(struct.addressOf);
+    }
+
+    return result;
+  }
+
+  void setLineValue(int lineHandle, bool value) {
+    assert(lineHandle != null);
+    assert(_requestedLines.contains(lineHandle));
+    assert(_lineHandleToLineHandleFd.containsKey(lineHandle));
+
+    final struct = newStruct<gpiohandle_data>();
+    struct.values[0] = value ? 1 : 0;
+    try {
+      _ioctl(_lineHandleToLineHandleFd[lineHandle],
+          GPIOHANDLE_SET_LINE_VALUES_IOCTL, struct.addressOf);
+    } finally {
+      ffi.free(struct.addressOf);
+    }
+  }
+
+  bool supportsBias() {
+    assert(Platform.isLinux);
+
+    final matches = RegExp("^Linux (\\d*)\\.(\\d*)")
+        .firstMatch(Platform.operatingSystemVersion);
+    if (matches.groupCount == 2) {
+      final major = int.parse(matches.group(1));
+      final minor = int.parse(matches.group(2));
+
+      if (major > 5) {
+        return true;
+      } else if (major == 5) {
+        if (minor >= 5) {
+          return true;
+        } else {
+          return false;
+        }
+      } else {
+        return false;
+      }
+    } else {
+      throw StateError(
+          "Could not parse linux release number from `Platform.operatingSystemVersion`: \"${Platform.operatingSystemVersion}\")");
+    }
+  }
+
+  bool supportsLineReconfiguration() {
+    return supportsBias();
+  }
+}
+
+/// Global interface to the linux kernel GPIO interface.
 ///
 /// Starting-point for querying gpio chips or lines,
 /// and finding the line you want to control.
@@ -184,37 +553,40 @@ class FlutterGpiod {
 
   /// Whether setting and getting GPIO line bias is supported.
   ///
-  /// See [GpioLine.request] and [GpioLine.reconfigure].
+  /// See [GpioLine.requestInput], [GpioLine.requestOutput],
+  /// [GpioLine.reconfigureInput] and [GpioLine.reconfigureOutput].
   final bool supportsBias;
 
   /// Whether GPIO line reconfiguration is supported.
   ///
-  /// See [GpioLine.reconfigure].
+  /// See [GpioLine.reconfigureInput] and [GpioLine.reconfigureOutput].
   final bool supportsLineReconfiguration;
 
-  Stream<_GlobalSignalEvent> __onGlobalSignalEvent;
+  Stream<GlobalSignalEvent> __onGlobalSignalEvent;
 
   /// Gets the global instance of [FlutterGpiod].
   ///
   /// If none exists, one will be constructed.
-  static Future<FlutterGpiod> getInstance() async {
+  static FlutterGpiod get instance {
     if (_instance == null) {
-      final List<GpioChip> chips = List.unmodifiable(await Future.wait(
-          List.generate(await _FlutterGpiodPlatformSide.getNumChips(),
-              (i) => GpioChip._fromIndex(i))));
-      final bias = await _FlutterGpiodPlatformSide.supportsBias();
-      final reconfig =
-          await _FlutterGpiodPlatformSide.supportsLineReconfiguration();
+      final chips = List.generate(
+          _FlutterGpiodPlatformSide.instance.getNumChips(),
+          (i) => GpioChip._fromIndex(i),
+          growable: false);
 
-      _instance = FlutterGpiod._internal(chips, bias, reconfig);
+      final bias = _FlutterGpiodPlatformSide.instance.supportsBias();
+      final reconfig =
+          _FlutterGpiodPlatformSide.instance.supportsLineReconfiguration();
+
+      _instance =
+          FlutterGpiod._internal(List.unmodifiable(chips), bias, reconfig);
     }
 
     return _instance;
   }
 
-  Stream<_GlobalSignalEvent> get _onGlobalSignalEvent {
-    __onGlobalSignalEvent ??=
-        _FlutterGpiodPlatformSide.receiveBroadcastStream();
+  Stream<GlobalSignalEvent> get _onGlobalSignalEvent {
+    __onGlobalSignalEvent ??= _FlutterGpiodPlatformSide.instance.eventStream;
     return __onGlobalSignalEvent;
   }
 
@@ -253,13 +625,15 @@ class GpioChip {
 
   GpioChip._(this.index, this.name, this.label, this._numLines, this.lines);
 
-  static Future<GpioChip> _fromIndex(int chipIndex) async {
-    final details = await _FlutterGpiodPlatformSide.getChipDetails(chipIndex);
+  factory GpioChip._fromIndex(int chipIndex) {
+    final details =
+        _FlutterGpiodPlatformSide.instance.getChipDetails(chipIndex);
 
-    final lines = await Future.wait(List.generate(
+    final lines = List.generate(
         details['numLines'],
-        (i) async => await GpioLine._fromHandle(
-            await _FlutterGpiodPlatformSide.getLineHandle(chipIndex, i))));
+        (i) => GpioLine._fromHandle(
+            _FlutterGpiodPlatformSide.instance.getLineHandle(chipIndex, i)),
+        growable: false);
 
     return GpioChip._(chipIndex, details['name'], details['label'],
         details['numLines'], List.unmodifiable(lines));
@@ -289,14 +663,13 @@ class LineInfo {
   /// Can be null, is limited and truncated to 32 characters.
   final String consumer;
 
-  /// Whether the line is currently used by any application.
+  /// Whether the line is currently used by any application (including this one).
   final bool isUsed;
 
   /// Whether the line is requested / owned by _this_ application.
   final bool isRequested;
 
-  /// Whether the line is free to be requested by any application.
-  final bool isFree;
+  bool get isFree => !isUsed;
 
   /// The direction of the line.
   final LineDirection direction;
@@ -314,7 +687,7 @@ class LineInfo {
   /// which maps active (i.e. `line.setValue(true)`) to low voltage and inactive to high voltage.
   final ActiveState activeState;
 
-  const LineInfo._(
+  const LineInfo(
       {this.name,
       this.consumer,
       this.direction,
@@ -322,26 +695,7 @@ class LineInfo {
       this.bias,
       this.activeState,
       this.isUsed,
-      this.isRequested,
-      this.isFree});
-
-  factory LineInfo._fromMap(Map<String, dynamic> map) {
-    return LineInfo._(
-        name: map['name'] as String,
-        consumer: map['consumer'] as String,
-        direction: LineDirection.values
-            .firstWhere((v) => v.toString() == map['direction']),
-        outputMode: OutputMode.values.firstWhere(
-            (v) => v.toString() == map['outputMode'],
-            orElse: () => null),
-        bias: Bias.values
-            .firstWhere((v) => v.toString() == map['bias'], orElse: () => null),
-        activeState: ActiveState.values
-            .firstWhere((v) => v.toString() == map['activeState']),
-        isUsed: map['isUsed'] as bool,
-        isRequested: map['isRequested'] as bool,
-        isFree: map['isFree'] as bool);
-  }
+      this.isRequested});
 
   String toString() {
     final params = <String>[];
@@ -388,41 +742,48 @@ class LineInfo {
 
 /// Provides access to a single GPIO line / pin.
 ///
-/// Basically has 3 states that define the methods you can call:
-///   `unrequested`, `requested input`, `requested output`
+/// Basically has 5 states that define the methods you can call:
+/// - unrequested & unused: [requestInput], [requestOutput]
+/// - unrequested & used: none
+/// - requested input without triggers: [getValue], [release], [reconfigureInput], [reconfigureOutput] (if supported)
+/// - requested input with triggers:  [getValue], [release], [reconfigureInput], [reconfigureOutput] (if supported)
+/// - requested output: [setValue], [getValue], [release], [reconfigureInput], [reconfigureOutput] (if supported)
 ///
 /// Example usage of [GpioLine]:
 /// ```dart
 /// import 'package:flutter_gpiod/flutter_gpiod.dart';
 ///
-/// final gpio = await FlutterGpiod.getInstance()
-///
-/// // get the line with index 22 from the first chip
-/// final line = gpio.chips.singleWhere(
+/// // find the chip with label 'pinctrl-bcm2835'
+/// // (the main Raspberry Pi IO chip)
+/// final chip = FlutterGpiod.instance.chips.singleWhere(
 ///   (chip) => chip.label == 'pinctrl-bcm2835'
 /// );
-/// print("pinctrl-bcm2835, line 22: $(await line.info)");
+///
+/// // get line 22 of that chip
+/// final line = chip.lines[22];
+///
+/// print("pinctrl-bcm2835, line 22: $(line.info)");
 ///
 /// // request is as output and initialize it with false
 /// await line.requestOutput(
 ///   consumer: "flutter_gpiod output test",
 ///   initialValue: false
-/// ));
+/// );
 ///
 /// // set the line active
-/// await line.setValue(true);
+/// line.setValue(true);
 ///
 /// await Future.delayed(Duration(milliseconds: 500));
 ///
 /// // set the line inactive again
-/// await line.setValue(false);
+/// line.setValue(false);
 ///
-/// await line.release();
+/// line.release();
 ///
 /// // request the line as input, and listen for both edges
 /// // we don't use `line.reconfigure` because that doesn't
 /// // allow us to specify triggers.
-/// await line.requestInput(
+/// line.requestInput(
 ///   consumer: "flutter_gpiod input test",
 ///   triggers: const {SignalEdge.rising, SignalEdge.falling}
 /// ));
@@ -432,112 +793,36 @@ class LineInfo {
 ///   print("gpio line signal event: $event");
 /// }
 ///
-/// // await line.release();
-/// ```
-/// Notice that access to the methods in GpioLine is synchronized.
-///
-/// This will throw an error:
-/// ```dart
-/// final gpio = await FlutterGpiod.getInstance();
-///
-/// final line = gpio.chips.singleWhere(
-///   (chip) => chip.label == 'pinctrl-bcm2835'
-/// );
-///
-/// line.requestInput() // notice the missing await
-///
-/// print("is line requested? ${line.requested}"); // this will throw the error.
-/// // The line ownership is undefined until the Future returned by line.requestInput() finishes.
-/// // Because this code doesn't wait until the returned Future completes,
-/// //   the request may still be running when `line.requested` is queried.
+/// // line.release();
 /// ```
 class GpioLine {
   GpioLine._internal(this._lineHandle, this._requested, this._info,
       this._triggers, this._value);
 
-  final _mutex = ReadWriteMutex();
   final int _lineHandle;
   bool _requested;
   LineInfo _info;
   Set<SignalEdge> _triggers;
   bool _value;
 
-  void _assertNotWriteLocked() {
-    if (_mutex.isWriteLocked) {
-      throw StateError("Action can't finish synchronously because "
-          "of an ongoing operation that can change the state "
-          "of the GPIO line.");
-    }
-  }
-
-  Future<T> _synchronizedRead<T>(FutureOr<T> f()) {
-    return _mutex
-        .acquireRead()
-        .then((_) => f())
-        .whenComplete(() => _mutex.release());
-  }
-
-  Future<T> _synchronizedWrite<T>(FutureOr<T> f()) {
-    return _mutex
-        .acquireWrite()
-        .then((_) => f())
-        .whenComplete(() => _mutex.release());
-  }
-
-  static Future<GpioLine> _fromHandle(int lineHandle) async {
-    final info = await _FlutterGpiodPlatformSide.getLineInfo(lineHandle);
+  factory GpioLine._fromHandle(int lineHandle) {
+    final info = _FlutterGpiodPlatformSide.instance.getLineInfo(lineHandle);
 
     if (info.isRequested) {
       return GpioLine._internal(lineHandle, true, info, const {},
-          await _FlutterGpiodPlatformSide.getLineValue(lineHandle));
+          _FlutterGpiodPlatformSide.instance.getLineValue(lineHandle));
     } else {
       return GpioLine._internal(lineHandle, false, null, const {}, null);
     }
   }
 
   /// Returns the line info for this line.
-  ///
-  /// Will return a [LineInfo] synchronously when `requested == true`
-  /// and no request / reconfiguration / release is going on right now.
-  /// Otherwise, returns a `Future<LineInfo>`.
-  FutureOr<LineInfo> get info {
-    if (_mutex.isWriteLocked == false && _info != null) {
+  LineInfo get info {
+    if (_info != null) {
       return _info;
     }
 
-    return _synchronizedRead(
-        () => _FlutterGpiodPlatformSide.getLineInfo(_lineHandle));
-  }
-
-  /// Provides synchronous access to [info].
-  ///
-  /// Throws a [StateError] when synchronous access is not possible.
-  /// Synchronous access is possible when `requested == true` and
-  /// no request / reconfiguration / release is going on right now.
-  ///
-  /// When possible, [info] will return synchronously,
-  /// but you have to cast it to `LineInfo` every time you want to use it,
-  /// which is kinda annoying.
-  /// This method does the casting for you.
-  LineInfo get infoSync {
-    _assertNotWriteLocked();
-
-    if (!requested) {
-      throw StateError("Can't get line info because line "
-          "is not requested.");
-    }
-
-    return _info;
-  }
-
-  /// Returns a proxy providing strictly asynchronous access to the above getters.
-  ///
-  /// You can't call [Future.then] or [Future.whenComplete] on the [FutureOr] values
-  /// returned by [info]. This method constructs a [Future] out of the [FutureOr]
-  /// returned by [info]. (regardless of the actual type of the [FutureOr])
-  Future<LineInfo> get infoAsync {
-    return _synchronizedRead(
-        () => _FlutterGpiodPlatformSide.getLineInfo(_lineHandle));
+    return _FlutterGpiodPlatformSide.instance.getLineInfo(_lineHandle);
   }
 
   /// Whether this line is requested (owned by you) right now.
@@ -547,10 +832,7 @@ class GpioLine {
   ///
   /// If `requested == false` then you can't do more
   /// than retrieve the line info using the [info] property.
-  bool get requested {
-    _assertNotWriteLocked();
-    return _requested;
-  }
+  bool get requested => _requested;
 
   /// The signal edges that this line is listening on right now,
   /// or equivalently, the signal edges that will trigger a [SignalEvent]
@@ -561,10 +843,7 @@ class GpioLine {
   ///
   /// You can, of course, release the line and re-request it with
   /// different triggers if you need to, though.
-  Set<SignalEdge> get triggers {
-    _assertNotWriteLocked();
-    return Set.of(_triggers);
-  }
+  Set<SignalEdge> get triggers => Set.of(_triggers);
 
   void _checkSupportsBiasValue(Bias bias) {
     if ((bias != null) && !FlutterGpiod._instance.supportsBias) {
@@ -579,10 +858,7 @@ class GpioLine {
   /// otherwise a [UnsupportedError] will be thrown.
   ///
   /// Only a free line can be requested.
-  ///
-  /// The ownership status in undefined until the [Future]
-  /// returned by [request] completes.
-  Future<void> requestInput(
+  void requestInput(
       {String consumer,
       Bias bias,
       ActiveState activeState = ActiveState.high,
@@ -592,54 +868,56 @@ class GpioLine {
     _checkSupportsBiasValue(bias);
 
     // we need to lock both info and ownership.
-    return _synchronizedWrite(() async {
-      if (_requested) {
-        throw StateError("Can't request line because it is already requested.");
-      }
+    if (_requested) {
+      throw StateError("Can't request line because it is already requested.");
+    }
 
-      await _FlutterGpiodPlatformSide.requestLine(
-          lineHandle: _lineHandle,
-          consumer: consumer,
-          direction: LineDirection.input,
-          bias: bias,
-          activeState: activeState,
-          triggers: triggers);
+    _FlutterGpiodPlatformSide.instance.requestLine(
+        lineHandle: _lineHandle,
+        consumer: consumer,
+        direction: LineDirection.input,
+        bias: bias,
+        activeState: activeState,
+        triggers: triggers);
 
-      _info = await _FlutterGpiodPlatformSide.getLineInfo(_lineHandle);
-      _requested = true;
-    });
+    _info = _FlutterGpiodPlatformSide.instance.getLineInfo(_lineHandle);
+
+    _requested = true;
   }
 
-  Future<void> requestOutput(
+  /// Requests ownership of a GPIO line with the given configuration.
+  ///
+  /// If [FlutterGpiod.supportsBias] is false, [bias] must be `null`,
+  /// otherwise a [UnsupportedError] will be thrown.
+  ///
+  /// Only a free line can be requested.
+  void requestOutput(
       {String consumer,
       OutputMode outputMode = OutputMode.pushPull,
       Bias bias,
       ActiveState activeState = ActiveState.high,
-      @required bool initialValue}) async {
+      @required bool initialValue}) {
     ArgumentError.checkNotNull(outputMode, "outputMode");
     ArgumentError.checkNotNull(activeState, "activeState");
     ArgumentError.checkNotNull(initialValue, "initialValue");
     _checkSupportsBiasValue(bias);
 
-    // we need to lock both info and ownership.
-    return _synchronizedWrite(() async {
-      if (_requested) {
-        throw StateError("Can't request line because it is already requested.");
-      }
+    if (_requested) {
+      throw StateError("Can't request line because it is already requested.");
+    }
 
-      await _FlutterGpiodPlatformSide.requestLine(
-          lineHandle: _lineHandle,
-          consumer: consumer,
-          direction: LineDirection.output,
-          outputMode: outputMode,
-          bias: bias,
-          activeState: activeState,
-          initialValue: initialValue);
+    _FlutterGpiodPlatformSide.instance.requestLine(
+        lineHandle: _lineHandle,
+        consumer: consumer,
+        direction: LineDirection.output,
+        outputMode: outputMode,
+        bias: bias,
+        activeState: activeState,
+        initialValue: initialValue);
 
-      _info = await _FlutterGpiodPlatformSide.getLineInfo(_lineHandle);
-      _value = initialValue;
-      _requested = true;
-    });
+    _info = _FlutterGpiodPlatformSide.instance.getLineInfo(_lineHandle);
+    _value = initialValue;
+    _requested = true;
   }
 
   void _checkSupportsLineReconfiguration() {
@@ -662,30 +940,27 @@ class GpioLine {
   ///
   /// You can't specify triggers here because of platform
   /// limitations.
-  Future<void> reconfigureInput(
+  void reconfigureInput(
       {Bias bias, ActiveState activeState = ActiveState.high}) {
     ArgumentError.checkNotNull(activeState, "activeState");
     _checkSupportsBiasValue(bias);
     _checkSupportsLineReconfiguration();
 
     // we only change the info, not the ownership
-    return _synchronizedWrite(() async {
-      _info = null;
-      _value = null;
+    _info = null;
+    _value = null;
 
-      if (!_requested) {
-        throw StateError(
-            "Can't reconfigured line because it is not requested.");
-      }
+    if (!_requested) {
+      throw StateError("Can't reconfigured line because it is not requested.");
+    }
 
-      await _FlutterGpiodPlatformSide.reconfigureLine(
-          lineHandle: _lineHandle,
-          direction: LineDirection.input,
-          bias: bias,
-          activeState: activeState);
+    _FlutterGpiodPlatformSide.instance.reconfigureLine(
+        lineHandle: _lineHandle,
+        direction: LineDirection.input,
+        bias: bias,
+        activeState: activeState);
 
-      _info = await _FlutterGpiodPlatformSide.getLineInfo(_lineHandle);
-    });
+    _info = _FlutterGpiodPlatformSide.instance.getLineInfo(_lineHandle);
   }
 
   /// Reconfigures the line as output with the given configuration.
@@ -695,7 +970,7 @@ class GpioLine {
   ///
   /// This will throw a [UnsupportedError] if
   /// [FlutterGpiod.supportsLineReconfiguration] is false.
-  Future<void> reconfigureOutput(
+  void reconfigureOutput(
       {OutputMode outputMode = OutputMode.pushPull,
       Bias bias,
       ActiveState activeState = ActiveState.high,
@@ -706,65 +981,60 @@ class GpioLine {
     ArgumentError.checkNotNull(initialValue, "initialValue");
     _checkSupportsLineReconfiguration();
 
-    return _synchronizedWrite(() async {
-      _info = null;
-      _value = null;
+    _info = null;
+    _value = null;
 
-      if (!_requested) {
-        throw StateError(
-            "Can't reconfigured line because it is not requested.");
-      }
+    if (!_requested) {
+      throw StateError("Can't reconfigured line because it is not requested.");
+    }
 
-      await _FlutterGpiodPlatformSide.reconfigureLine(
-          lineHandle: _lineHandle,
-          direction: LineDirection.output,
-          outputMode: outputMode,
-          bias: bias,
-          activeState: activeState,
-          initialValue: initialValue);
+    _FlutterGpiodPlatformSide.instance.reconfigureLine(
+        lineHandle: _lineHandle,
+        direction: LineDirection.output,
+        outputMode: outputMode,
+        bias: bias,
+        activeState: activeState,
+        initialValue: initialValue);
 
-      _value = initialValue;
-      _info = await _FlutterGpiodPlatformSide.getLineInfo(_lineHandle);
-    });
+    _value = initialValue;
+    _info = _FlutterGpiodPlatformSide.instance.getLineInfo(_lineHandle);
   }
 
   /// Releases the line, so you don't own it anymore.
-  ///
-  /// The lines ownership is undefined until the Future
-  /// returned by [release] completes.
-  Future<void> release() {
-    return _synchronizedWrite(() async {
-      if (!_requested) {
-        throw StateError("Can't release line because it is not requested.");
-      }
+  void release() {
+    if (!_requested) {
+      throw StateError("Can't release line because it is not requested.");
+    }
 
-      await _FlutterGpiodPlatformSide.releaseLine(_lineHandle);
+    _FlutterGpiodPlatformSide.instance.releaseLine(_lineHandle);
 
-      _requested = false;
-      _info = null;
-      _triggers = const {};
-      _value = null;
-    });
+    _requested = false;
+    _info = null;
+    _triggers = const {};
+    _value = null;
   }
 
   /// Sets the value of the line to active (true) or inactive (false).
   ///
   /// Throws a [StateError] if the line is not requested as output.
-  Future<void> setValue(bool value) {
+  void setValue(bool value) {
     ArgumentError.checkNotNull(value, "value");
 
-    return _synchronizedRead(() async {
-      if (!_requested || _info.direction != LineDirection.output) {
-        throw StateError(
-            "Can't set line value because line is not configured as output.");
-      }
+    if (_requested == false) {
+      throw StateError(
+          "Can't set line value because line is not requested and configured as output.");
+    }
 
-      if (_value == value) return;
+    if (_info.direction != LineDirection.output) {
+      throw StateError(
+          "Can't set line value because line is not configured as output.");
+    }
 
-      await _FlutterGpiodPlatformSide.setLineValue(_lineHandle, value);
+    if (_value == value) return;
 
-      _value = value;
-    });
+    _FlutterGpiodPlatformSide.instance.setLineValue(_lineHandle, value);
+
+    _value = value;
   }
 
   /// Reads the value of the line (active / inactive)
@@ -778,32 +1048,15 @@ class GpioLine {
   ///
   /// If `direction == LineDirection.input` this will obtain a
   /// fresh value from the platform side.
-  FutureOr<bool> getValue() {
-    if (_mutex.isWriteLocked) {
-      // If it is locked, we need to synchronize the access.
-      return _synchronizedRead(() {
-        if (_requested == false) {
-          throw StateError(
-              "Can't get line value because line is not requested.");
-        }
+  bool getValue() {
+    if (_requested == false) {
+      throw StateError("Can't get line value because line is not requested.");
+    }
 
-        if (_info.direction == LineDirection.input) {
-          return _FlutterGpiodPlatformSide.getLineValue(_lineHandle);
-        } else {
-          return _value;
-        }
-      });
+    if (_info.direction == LineDirection.input) {
+      return _FlutterGpiodPlatformSide.instance.getLineValue(_lineHandle);
     } else {
-      if (_requested == false) {
-        throw StateError("Can't get line value because line is not requested.");
-      }
-
-      if (_info.direction == LineDirection.output) {
-        return _value;
-      } else {
-        return _synchronizedRead(
-            () => _FlutterGpiodPlatformSide.getLineValue(_lineHandle));
-      }
+      return _value;
     }
   }
 
@@ -817,16 +1070,8 @@ class GpioLine {
   /// like this: `rising`, `rising`, `rising`, `falling`, `rising`,
   /// even though that doesn't seem to make any sense
   /// at first glance.
-  Stream<SignalEvent> get onEvent {
-    final completer = StreamCompleter<SignalEvent>();
-
-    _synchronizedRead(() => FlutterGpiod._instance._onSignalEvent(_lineHandle))
-        .then((stream) => completer.setSourceStream(stream),
-            onError: (error, stackTrace) =>
-                completer.setError(error, stackTrace));
-
-    return completer.stream;
-  }
+  Stream<SignalEvent> get onEvent =>
+      FlutterGpiod.instance._onSignalEvent(_lineHandle);
 
   /// Broadcast stream of signal edges.
   ///
@@ -834,7 +1079,6 @@ class GpioLine {
   Stream<SignalEdge> get onEdge => onEvent.map((e) => e.edge);
 
   String toString() {
-    final infoStr = _requested ? ", info: $infoSync" : "";
-    return "GpioLine(requested: $_requested$infoStr)";
+    return "GpioLine(info: $info)";
   }
 }

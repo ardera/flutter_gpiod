@@ -1,0 +1,9 @@
+name: gpiod_generated_bindings
+version: 0.0.1
+
+dependencies:
+  ffi: ^0.1.3
+  ffigen: ^0.2.1+1
+  
+environment:
+  sdk: ">=2.9.0 <3.0.0"

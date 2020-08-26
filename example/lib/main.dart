@@ -12,10 +12,8 @@ class FlutterGpiodTestApp extends StatefulWidget {
 
 class _FlutterGpiodTestAppState extends State<FlutterGpiodTestApp> {
   Future<void> _testFlutterGpiod() async {
-    final gpio = await FlutterGpiod.getInstance();
-
     /// Retrieve the list of GPIO chips.
-    final chips = gpio.chips;
+    final chips = FlutterGpiod.instance.chips;
 
     /// Print out all GPIO chips and all lines
     /// for all GPIO chips.
@@ -23,7 +21,7 @@ class _FlutterGpiodTestAppState extends State<FlutterGpiodTestApp> {
       print("$chip");
 
       for (var line in chip.lines) {
-        print("  ${await line.info}");
+        print("  $line");
       }
     }
 
@@ -40,23 +38,25 @@ class _FlutterGpiodTestAppState extends State<FlutterGpiodTestApp> {
         chips.singleWhere((chip) => chip.label == 'pinctrl-bcm2835').lines[23];
 
     /// Request BCM 23 as output.
-    await line.requestOutput(
-        consumer: "flutter_gpiod test", initialValue: true);
+    line.requestOutput(consumer: "flutter_gpiod test", initialValue: false);
 
-    /// Pulse the line.
-    /// Set it to inactive. (so low voltage = GND)
-    await line.setValue(false);
+    /// Pulse the line 2 times.
+    line.setValue(true);
     await Future.delayed(Duration(milliseconds: 500));
-    await line.setValue(true);
+    line.setValue(false);
     await Future.delayed(Duration(milliseconds: 500));
-
-    await line.release();
+    line.setValue(true);
+    await Future.delayed(Duration(milliseconds: 500));
+    // setValue(false) is not needed since we're releasing it anyway
+    line.release();
 
     /// Now we're listening for falling and rising edge events
     /// on BCM 23.
-    await line.requestInput(
+    line.requestInput(
         consumer: "flutter_gpiod input test",
         triggers: {SignalEdge.falling, SignalEdge.rising});
+
+    print("line value: ${line.getValue()}");
 
     /// Log line events for eternity.
     await for (final event in line.onEvent) {
@@ -64,7 +64,7 @@ class _FlutterGpiodTestAppState extends State<FlutterGpiodTestApp> {
     }
 
     /// Release the line, though we'll never reach this point.
-    await line.release();
+    line.release();
   }
 
   @override
