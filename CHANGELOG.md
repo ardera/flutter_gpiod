@@ -2,6 +2,7 @@
 
 * switch to using FFI
 * libgpiod is no longer required, the interface accesses the GPIO character devices directly using ioctls
+* flutter is not required anymore as well
 * a lot of stuff has been made synchronous
 * add a sub-project for generating the FFI bindings ("bindings_generator")
 * update the examples for the new API

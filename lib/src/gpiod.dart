@@ -123,12 +123,23 @@ void _eventIsolateEntry(Tuple2<SendPort, int> args) {
 }
 
 /// Provides raw access to the platform-side methods.
-class _FlutterGpiodPlatformSide {
-  _FlutterGpiodPlatformSide._construct(this.libc, this._numChips,
+class PlatformSide {
+  PlatformSide._construct(this.libc, this._numChips,
       this._chipIndexToFd, this._epollFd, this._eventReceivePort);
 
-  factory _FlutterGpiodPlatformSide._internal() {
-    final libc = LibC(ffi.DynamicLibrary.open("libc.so.6"));
+  factory PlatformSide._internal() {
+    if (!Platform.isLinux && !Platform.isAndroid) {
+      throw StateError("flutter_gpiod is only available on GNU/linux and android.");
+    }
+    
+    ffi.DynamicLibrary dylib;
+    if (Platform.isLinux) {
+      dylib = ffi.DynamicLibrary.open("libc.so.6");
+    } else if (Platform.isAndroid) {
+      dylib = ffi.DynamicLibrary.open("libc.so");
+    }
+
+    final libc = LibC(dylib);
 
     final numChips = Directory("/dev")
         .listSync(followLinks: false, recursive: false)
@@ -167,7 +178,7 @@ class _FlutterGpiodPlatformSide {
           "Could not launch GPIO event listener isolate. $err\nStackTrace: $stackTrace");
     });
 
-    return _FlutterGpiodPlatformSide._construct(
+    return PlatformSide._construct(
         libc, numChips, chipIndexToFd, epollFd, receivePort);
   }
 
@@ -182,11 +193,11 @@ class _FlutterGpiodPlatformSide {
 
   Stream<GlobalSignalEvent> _eventStream;
 
-  static _FlutterGpiodPlatformSide _instance;
+  static PlatformSide _instance;
 
-  static _FlutterGpiodPlatformSide get instance {
+  static PlatformSide get instance {
     if (_instance == null) {
-      _instance = _FlutterGpiodPlatformSide._internal();
+      _instance = PlatformSide._internal();
     }
     return _instance;
   }
@@ -216,7 +227,7 @@ class _FlutterGpiodPlatformSide {
       element.sort((a, b) => a[2].compareTo(b[2]));
       return element;
     }).map((list) {
-      final lineHandle = _lineHandleToLineHandleFd.entries
+      final lineHandle = _lineHandleToLineEventFd.entries
           .singleWhere((e) => e.value == list[0])
           .key;
       final edge = list[1] == GPIOEVENT_EVENT_RISING_EDGE
@@ -543,50 +554,55 @@ class _FlutterGpiodPlatformSide {
 /// Starting-point for querying gpio chips or lines,
 /// and finding the line you want to control.
 class FlutterGpiod {
-  FlutterGpiod._internal(
-      this.chips, this.supportsBias, this.supportsLineReconfiguration);
+  FlutterGpiod._private();
 
   static FlutterGpiod _instance;
 
+  Set<GpioChip> _chips;
+  bool _supportsBias;
+  bool _supportsLineReconfiguration;
+  Stream<GlobalSignalEvent> __onGlobalSignalEvent;
+
   /// The list of GPIO chips attached to this system.
-  final List<GpioChip> chips;
+  Set<GpioChip> get chips {
+    if (_chips == null) {
+      final chips = <GpioChip>{};
+      for (var i = 0; i < PlatformSide.instance.getNumChips(); i++) {
+        chips.add(GpioChip._fromIndex(i));
+      }
+      _chips = chips;
+    }
+
+    return Set.of(_chips);
+  }
 
   /// Whether setting and getting GPIO line bias is supported.
   ///
   /// See [GpioLine.requestInput], [GpioLine.requestOutput],
   /// [GpioLine.reconfigureInput] and [GpioLine.reconfigureOutput].
-  final bool supportsBias;
+  bool get supportsBias {
+    _supportsBias ??= PlatformSide.instance.supportsBias();
+    return _supportsBias;
+  }
 
   /// Whether GPIO line reconfiguration is supported.
   ///
   /// See [GpioLine.reconfigureInput] and [GpioLine.reconfigureOutput].
-  final bool supportsLineReconfiguration;
-
-  Stream<GlobalSignalEvent> __onGlobalSignalEvent;
+  bool get supportsLineReconfiguration {
+    _supportsLineReconfiguration ??= PlatformSide.instance.supportsLineReconfiguration();
+    return _supportsLineReconfiguration;
+  }
 
   /// Gets the global instance of [FlutterGpiod].
   ///
   /// If none exists, one will be constructed.
   static FlutterGpiod get instance {
-    if (_instance == null) {
-      final chips = List.generate(
-          _FlutterGpiodPlatformSide.instance.getNumChips(),
-          (i) => GpioChip._fromIndex(i),
-          growable: false);
-
-      final bias = _FlutterGpiodPlatformSide.instance.supportsBias();
-      final reconfig =
-          _FlutterGpiodPlatformSide.instance.supportsLineReconfiguration();
-
-      _instance =
-          FlutterGpiod._internal(List.unmodifiable(chips), bias, reconfig);
-    }
-
+    _instance ??= FlutterGpiod._private();
     return _instance;
   }
 
   Stream<GlobalSignalEvent> get _onGlobalSignalEvent {
-    __onGlobalSignalEvent ??= _FlutterGpiodPlatformSide.instance.eventStream;
+    __onGlobalSignalEvent ??= PlatformSide.instance.eventStream;
     return __onGlobalSignalEvent;
   }
 
@@ -627,12 +643,12 @@ class GpioChip {
 
   factory GpioChip._fromIndex(int chipIndex) {
     final details =
-        _FlutterGpiodPlatformSide.instance.getChipDetails(chipIndex);
+        PlatformSide.instance.getChipDetails(chipIndex);
 
     final lines = List.generate(
         details['numLines'],
         (i) => GpioLine._fromHandle(
-            _FlutterGpiodPlatformSide.instance.getLineHandle(chipIndex, i)),
+            PlatformSide.instance.getLineHandle(chipIndex, i)),
         growable: false);
 
     return GpioChip._(chipIndex, details['name'], details['label'],
@@ -641,7 +657,7 @@ class GpioChip {
 
   @override
   String toString() {
-    return "GpiodChip(index: $index, name: '$name', label: '$label', numLines: $_numLines)";
+    return "GpioChip(index: $index, name: '$name', label: '$label', numLines: $_numLines)";
   }
 }
 
@@ -806,11 +822,11 @@ class GpioLine {
   bool _value;
 
   factory GpioLine._fromHandle(int lineHandle) {
-    final info = _FlutterGpiodPlatformSide.instance.getLineInfo(lineHandle);
+    final info = PlatformSide.instance.getLineInfo(lineHandle);
 
     if (info.isRequested) {
       return GpioLine._internal(lineHandle, true, info, const {},
-          _FlutterGpiodPlatformSide.instance.getLineValue(lineHandle));
+          PlatformSide.instance.getLineValue(lineHandle));
     } else {
       return GpioLine._internal(lineHandle, false, null, const {}, null);
     }
@@ -822,7 +838,7 @@ class GpioLine {
       return _info;
     }
 
-    return _FlutterGpiodPlatformSide.instance.getLineInfo(_lineHandle);
+    return PlatformSide.instance.getLineInfo(_lineHandle);
   }
 
   /// Whether this line is requested (owned by you) right now.
@@ -872,7 +888,7 @@ class GpioLine {
       throw StateError("Can't request line because it is already requested.");
     }
 
-    _FlutterGpiodPlatformSide.instance.requestLine(
+    PlatformSide.instance.requestLine(
         lineHandle: _lineHandle,
         consumer: consumer,
         direction: LineDirection.input,
@@ -880,7 +896,7 @@ class GpioLine {
         activeState: activeState,
         triggers: triggers);
 
-    _info = _FlutterGpiodPlatformSide.instance.getLineInfo(_lineHandle);
+    _info = PlatformSide.instance.getLineInfo(_lineHandle);
 
     _requested = true;
   }
@@ -906,7 +922,7 @@ class GpioLine {
       throw StateError("Can't request line because it is already requested.");
     }
 
-    _FlutterGpiodPlatformSide.instance.requestLine(
+    PlatformSide.instance.requestLine(
         lineHandle: _lineHandle,
         consumer: consumer,
         direction: LineDirection.output,
@@ -915,7 +931,7 @@ class GpioLine {
         activeState: activeState,
         initialValue: initialValue);
 
-    _info = _FlutterGpiodPlatformSide.instance.getLineInfo(_lineHandle);
+    _info = PlatformSide.instance.getLineInfo(_lineHandle);
     _value = initialValue;
     _requested = true;
   }
@@ -954,13 +970,13 @@ class GpioLine {
       throw StateError("Can't reconfigured line because it is not requested.");
     }
 
-    _FlutterGpiodPlatformSide.instance.reconfigureLine(
+    PlatformSide.instance.reconfigureLine(
         lineHandle: _lineHandle,
         direction: LineDirection.input,
         bias: bias,
         activeState: activeState);
 
-    _info = _FlutterGpiodPlatformSide.instance.getLineInfo(_lineHandle);
+    _info = PlatformSide.instance.getLineInfo(_lineHandle);
   }
 
   /// Reconfigures the line as output with the given configuration.
@@ -988,7 +1004,7 @@ class GpioLine {
       throw StateError("Can't reconfigured line because it is not requested.");
     }
 
-    _FlutterGpiodPlatformSide.instance.reconfigureLine(
+    PlatformSide.instance.reconfigureLine(
         lineHandle: _lineHandle,
         direction: LineDirection.output,
         outputMode: outputMode,
@@ -997,7 +1013,7 @@ class GpioLine {
         initialValue: initialValue);
 
     _value = initialValue;
-    _info = _FlutterGpiodPlatformSide.instance.getLineInfo(_lineHandle);
+    _info = PlatformSide.instance.getLineInfo(_lineHandle);
   }
 
   /// Releases the line, so you don't own it anymore.
@@ -1006,7 +1022,7 @@ class GpioLine {
       throw StateError("Can't release line because it is not requested.");
     }
 
-    _FlutterGpiodPlatformSide.instance.releaseLine(_lineHandle);
+    PlatformSide.instance.releaseLine(_lineHandle);
 
     _requested = false;
     _info = null;
@@ -1032,7 +1048,7 @@ class GpioLine {
 
     if (_value == value) return;
 
-    _FlutterGpiodPlatformSide.instance.setLineValue(_lineHandle, value);
+    PlatformSide.instance.setLineValue(_lineHandle, value);
 
     _value = value;
   }
@@ -1054,7 +1070,7 @@ class GpioLine {
     }
 
     if (_info.direction == LineDirection.input) {
-      return _FlutterGpiodPlatformSide.instance.getLineValue(_lineHandle);
+      return PlatformSide.instance.getLineValue(_lineHandle);
     } else {
       return _value;
     }
