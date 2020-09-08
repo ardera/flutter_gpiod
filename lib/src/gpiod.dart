@@ -70,7 +70,14 @@ void _eventIsolateEntry(Tuple2<SendPort, int> args) {
   final sendPort = args.item1;
   final epollFd = args.item2;
 
-  final libc = LibC(ffi.DynamicLibrary.open("libc.so.6"));
+  ffi.DynamicLibrary dylib;
+  if (Platform.isLinux) {
+    dylib = ffi.DynamicLibrary.open("libc.so.6");
+  } else if (Platform.isAndroid) {
+    dylib = ffi.DynamicLibrary.open("libc.so");
+  }
+
+  final libc = LibC(dylib);
 
   final maxEpollEvents = 64;
   final epollEvents = ffi.allocate<epoll_event>(count: maxEpollEvents);
@@ -157,8 +164,21 @@ class PlatformSide {
 
       if (fd < 0) {
         chipIndexToFd.values.forEach((fd) => libc.close(fd));
-        throw FileSystemException(
-            "Could not open GPIO chip $i", "/dev/gpiochip$i");
+
+        try {
+          File("/dev/gpiochip$i").openSync(mode: FileMode.write).closeSync();
+        } on FileSystemException {
+          throw StateError(
+            "Could not open \"/dev/gpiochip$i\" for reading & writing. "
+            "Check that you have sufficient permissions to access that file. "
+            "If you're on Android, be aware that you can't use flutter_gpiod if "
+            "you don't have root access to your device."
+          );
+        }
+
+        throw OSError(
+          "Could not open GPIO chip $i at \"/dev/gpiochip$i\""
+        );
       }
 
       chipIndexToFd[i] = fd;
