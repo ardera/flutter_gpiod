@@ -1,6 +1,6 @@
 name: flutter_gpiod
 description:
-  Flutter package for accessing libgpiod on linux.
+  Dart package for accessing GPIO using the GPIO character device interface on linux / Android (root required).
   Supports signal edge listening, active state, open source/drain and (if supported by platform) bias.
   Only works with flutter-pi.
 version: 0.2.0

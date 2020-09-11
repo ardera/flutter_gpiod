@@ -1,4 +1,6 @@
 # 📰 NEWS
+- If you have root access, works on Android too (See issue [#9](https://github.com/ardera/flutter_gpiod/issues/9#issuecomment-689112840))
+- even though the name seems to imply otherwise, the flutter SDK is not required to use this package.
 - `libgpiod` is no longer required
 - a lot of the `async` stuff has gone away, making it nicer & easier to use
 - The package uses FFI with ioctls now, which should result in lower latency. (The event listener isolate gets signal edge events ~300us after they ocurred, the main isolate after ~1000us)
@@ -7,7 +9,7 @@
 
 # flutter_gpiod
 
-A dart package for GPIO access on linux using the linux GPIO character-device interface.
+A dart package for GPIO access on linux / Android (*root required*) using the linux GPIO character-device interface.
 
 ## Getting Started
 
