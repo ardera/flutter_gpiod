@@ -225,7 +225,7 @@ class PlatformInterface {
       final dateTime = DateTime.fromMicrosecondsSinceEpoch(list[2] ~/ 1000);
 
       return GlobalSignalEvent(lineHandle, SignalEvent(edge, dateTime));
-    });
+    }).asBroadcastStream();
 
     return _eventStream;
   }
