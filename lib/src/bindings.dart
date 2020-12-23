@@ -193,7 +193,8 @@ List<T> listFromArrayHelper<T>(int length, T getElement(int index)) {
 String stringFromInlineArray(int maxLength, int getElement(int index),
     {Encoding codec = const Utf8Codec(allowMalformed: true)}) {
   final list = listFromArrayHelper(maxLength, getElement);
-  final length = list.indexOf(0);
+  final indexOfZero = list.indexOf(0);
+  final length = indexOfZero == -1 ? maxLength : indexOfZero;
 
   return codec.decode(list.sublist(0, length));
 }
@@ -201,7 +202,13 @@ String stringFromInlineArray(int maxLength, int getElement(int index),
 void writeStringToArrayHelper(
     String str, int length, void setElement(int index, int value),
     {Encoding codec = const Utf8Codec(allowMalformed: true)}) {
-  codec.encode(str).take(length).toList().asMap().forEach(setElement);
+  
+  final untruncatedBytes = List.of(codec.encode(str))
+    ..addAll(List.filled(length, 0));
+
+  untruncatedBytes.take(length)
+    .toList().asMap()
+    .forEach(setElement);
 }
 
 class LinuxError extends OSError {

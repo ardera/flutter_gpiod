@@ -80,7 +80,7 @@ void _eventIsolateEntry(Tuple2<SendPort, int> args) {
 
   while (true) {
     ok = libc.epoll_wait(
-        epollFd, epollEvents.cast<epoll_event>(), maxEpollEvents, 0);
+        epollFd, epollEvents.cast<epoll_event>(), maxEpollEvents, -1);
     if (ok < 0) {
       ffi.free(epollEvents);
       ffi.free(events);
@@ -161,11 +161,7 @@ class PlatformInterface {
 
     final receivePort = ReceivePort();
 
-    Isolate.spawn(_eventIsolateEntry, Tuple2(receivePort.sendPort, epollFd))
-        .catchError((err, stackTrace) {
-      print(
-          "Could not launch GPIO event listener isolate. $err\nStackTrace: $stackTrace");
-    });
+    Isolate.spawn(_eventIsolateEntry, Tuple2(receivePort.sendPort, epollFd));
 
     return PlatformInterface._construct(
         libc, numChips, chipIndexToFd, epollFd, receivePort);
@@ -211,21 +207,25 @@ class PlatformInterface {
   }
 
   Stream<GlobalSignalEvent> get eventStream {
-    _eventStream ??=
-        _eventReceivePort.cast<List<List<int>>>().expand((element) {
-      element.sort((a, b) => a[2].compareTo(b[2]));
-      return element;
-    }).map((list) {
-      final lineHandle = _lineHandleToLineEventFd.entries
-          .singleWhere((e) => e.value == list[0])
-          .key;
-      final edge = list[1] == GPIOEVENT_EVENT_RISING_EDGE
-          ? SignalEdge.rising
-          : SignalEdge.falling;
-      final dateTime = DateTime.fromMicrosecondsSinceEpoch(list[2] ~/ 1000);
+    if (_eventStream == null) {
+      _eventStream = _eventReceivePort
+        .cast<List<List<int>>>()
+        .expand((element) {
+          // sort with increasing timestamps
+          element.sort((a, b) => a[2].compareTo(b[2]));
+          return element;
+        }).map((list) {
+          final lineHandle = _lineHandleToLineEventFd.entries
+              .singleWhere((e) => e.value == list[0])
+              .key;
+          final edge = list[1] == GPIOEVENT_EVENT_RISING_EDGE
+              ? SignalEdge.rising
+              : SignalEdge.falling;
+          final dateTime = DateTime.fromMicrosecondsSinceEpoch(list[2] ~/ 1000);
 
-      return GlobalSignalEvent(lineHandle, SignalEvent(edge, dateTime));
-    });
+          return GlobalSignalEvent(lineHandle, SignalEvent(edge, dateTime));
+        }).asBroadcastStream();
+    }
 
     return _eventStream;
   }
@@ -418,8 +418,13 @@ class PlatformInterface {
   void releaseLine(int lineHandle) {
     assert(_requestedLines.contains(lineHandle));
 
-    libc.close(_lineHandleToLineHandleFd[lineHandle]);
-
+    final fd = _lineHandleToLineHandleFd[lineHandle] ?? _lineHandleToLineEventFd[lineHandle];
+    var ok = libc.close(fd);
+    var errno = libc.errno;
+    if (ok != 0) {
+      throw LinuxError("Couldn't release line by closing line handle file descriptor.", "close", errno);
+    }
+    
     _requestedLines.remove(lineHandle);
     _lineHandleToLineHandleFd.remove(lineHandle);
     _lineHandleToLineEventFd.remove(lineHandle);
