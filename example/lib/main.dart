@@ -26,7 +26,7 @@ void main() async {
   /// In this example, we search for the main Raspberry Pi GPIO chip,
   /// which has the label `pinctrl-bcm2835`, and then retrieve the line
   /// with index 23 of it. So [line] is GPIO pin BCM 23.
-  
+
   final chip = chips.singleWhere((chip) => chip.label == 'pinctrl-bcm2835');
 
   final line1 = chip.lines[23];
@@ -48,13 +48,10 @@ void main() async {
   /// Now we're listening for falling and rising edge events
   /// on BCM 23 and BCM 24.
   line1.requestInput(
-      consumer: "test 1",
-      triggers: {SignalEdge.falling, SignalEdge.rising});
-  
+      consumer: "test 1", triggers: {SignalEdge.falling, SignalEdge.rising});
+
   line2.requestInput(
-    consumer: "test 2",
-    triggers: {SignalEdge.falling, SignalEdge.rising}
-  );
+      consumer: "test 2", triggers: {SignalEdge.falling, SignalEdge.rising});
 
   print("line value: ${line1.getValue()}");
 
@@ -68,7 +65,7 @@ void main() async {
   var countEvents = 0;
   await for (final event in mergedEvents) {
     print("GPIO event: $event");
-    
+
     countEvents++;
     if (countEvents > 100) {
       break;
@@ -79,18 +76,18 @@ void main() async {
   /// for example, if you listen on an interrupt line and
   /// you block until you receive an interrupt (= a signal event)
   /// in your code, be careful to NOT write code such as the following:
-  /// 
+  ///
   /// ```dart
   /// final interruptLine = ...;
-  /// 
+  ///
   /// // do something that triggers an interrupt here
-  /// 
+  ///
   /// // wait for an interrupt
   /// await for (final _ in interruptLine.onEvent) break;
-  /// 
+  ///
   /// // continue here
   /// ```
-  /// 
+  ///
   /// [GpioLine.onEvent] is a broadcast stream. If an event is
   /// added to a broadcast stream, but no listener is present,
   /// that event will simply be discarded. So if your chip
@@ -98,7 +95,7 @@ void main() async {
   /// the `await for`, the signal event will be discarded and
   /// the dart code will block there indefinitely, waiting for
   /// a signal event.
-  /// 
+  ///
   /// Instead, do something like this:
 
   /// Get a single-subscription (buffering stream).
@@ -106,14 +103,16 @@ void main() async {
   /// If you use `listen` to subscribe to this Stream (or mapped / filtered / etc variants of it),
   /// it's important to cancel your subscription afterwards, otherwise
   /// memory will fill up with buffered signal events.
-  
+
   /// `SingleSubscriptionTransformer` is contained in the `async` package btw.
-  final bufferingStream = line1.onEvent.transform(SingleSubscriptionTransformer<SignalEvent, SignalEvent>());
+  final bufferingStream = line1.onEvent
+      .transform(SingleSubscriptionTransformer<SignalEvent, SignalEvent>());
 
   // Let's say, if we pulse line 2 (BCM 24) some device connected
   // to it will pulse line 1 (BCM 23) as an interrupt.
   line2.release();
-  line2.requestOutput(consumer: 'some device that has interrupts', initialValue: false);
+  line2.requestOutput(
+      consumer: 'some device that has interrupts', initialValue: false);
   line2.setValue(true);
   await Future.delayed(Duration(milliseconds: 500));
   line2.setValue(false);
@@ -131,6 +130,6 @@ void main() async {
   /// you also can't listen to / use `await for` with `bufferingStream`
   /// at this point anymore, since single subscription streams are not reusable
   /// after they were canceled.
-  
+
   line1.release();
 }

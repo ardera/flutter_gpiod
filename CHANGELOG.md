@@ -1,3 +1,9 @@
+## 0.3.0
+
+* `GpioLine.onEvent` is now a broadcast (not single subscription) stream
+* example was updated to include some gotchas with this single subscription stream
+* fix a bug with closing event lines
+
 ## 0.2.0
 
 * switch to using FFI
