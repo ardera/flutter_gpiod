@@ -1,3 +1,7 @@
+## 0.3.1
+
+* fix docs for `GpioChip.label`
+
 ## 0.3.0
 
 * `GpioLine.onEvent` is now a broadcast (not single subscription) stream
