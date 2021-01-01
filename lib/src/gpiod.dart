@@ -632,7 +632,7 @@ class GpioChip {
   ///
   /// This is the hardware label of the underlying GPIO device.
   /// The main GPIO chip of the Raspberry Pi 4 has the label
-  /// `brcm2835-pinctrl` for example.
+  /// `pinctrl-bcm2835` for example.
   final String label;
 
   final int _numLines;
