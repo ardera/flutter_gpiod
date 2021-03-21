@@ -16,14 +16,11 @@ import 'bindings/libc64_bindings.g.dart' show LibCInternal64;
 part 'bindings/libc_constants.g.dart';
 part 'bindings/gpio_bindings.g.dart';
 
-typedef _c_ioctl_pointer_32 = ffi.Int32 Function(
-    ffi.Int32 __fd, ffi.Uint32 __request, ffi.Pointer<ffi.Void> argp);
+typedef _c_ioctl_pointer_32 = ffi.Int32 Function(ffi.Int32 __fd, ffi.Uint32 __request, ffi.Pointer<ffi.Void> argp);
 
-typedef _c_ioctl_pointer_64 = ffi.Int32 Function(
-    ffi.Int32 __fd, ffi.Uint64 __request, ffi.Pointer<ffi.Void> argp);
+typedef _c_ioctl_pointer_64 = ffi.Int32 Function(ffi.Int32 __fd, ffi.Uint64 __request, ffi.Pointer<ffi.Void> argp);
 
-typedef _dart_ioctl_pointer = int Function(
-    int __fd, int __request, ffi.Pointer<ffi.Void> argp);
+typedef _dart_ioctl_pointer = int Function(int __fd, int __request, ffi.Pointer<ffi.Void> argp);
 
 typedef _c_errno_location = ffi.Pointer<ffi.Int32> Function();
 
@@ -34,10 +31,8 @@ abstract class LibCBase {
   int ioctlPointer(int __fd, int __request, ffi.Pointer argp);
   int epoll_create(int __size);
   int epoll_create1(int __flags);
-  int epoll_ctl(
-      int __epfd, int __op, int __fd, ffi.Pointer<epoll_event> __event);
-  int epoll_wait(int __epfd, ffi.Pointer<epoll_event> __events, int __maxevents,
-      int __timeout);
+  int epoll_ctl(int __epfd, int __op, int __fd, ffi.Pointer<epoll_event> __event);
+  int epoll_wait(int __epfd, ffi.Pointer<epoll_event> __events, int __maxevents, int __timeout);
   int open(ffi.Pointer<ffi.Int8> __file, int __oflag);
   int close(int __fd);
   int read(int __fd, ffi.Pointer<ffi.Void> __buf, int __nbytes);
@@ -69,8 +64,7 @@ class LibC32 extends LibCInternal32 implements LibCBase {
   _dart_ioctl_pointer _ioctlPointer;
   @override
   int ioctlPointer(int __fd, int __request, ffi.Pointer argp) {
-    _ioctlPointer ??= _dylib
-        .lookupFunction<_c_ioctl_pointer_32, _dart_ioctl_pointer>('ioctl');
+    _ioctlPointer ??= _dylib.lookupFunction<_c_ioctl_pointer_32, _dart_ioctl_pointer>('ioctl');
     return _ioctlPointer(__fd, __request, argp.cast<ffi.Void>());
   }
 }
@@ -82,8 +76,7 @@ class LibC64 extends LibCInternal64 implements LibCBase {
 
   @override
   int ioctlPointer(int __fd, int __request, ffi.Pointer argp) {
-    _ioctlPointer ??= _dylib
-        .lookupFunction<_c_ioctl_pointer_64, _dart_ioctl_pointer>('ioctl');
+    _ioctlPointer ??= _dylib.lookupFunction<_c_ioctl_pointer_64, _dart_ioctl_pointer>('ioctl');
     return _ioctlPointer(__fd, __request, argp.cast<ffi.Void>());
   }
 
@@ -118,53 +111,38 @@ class LibC implements LibCBase {
   int epoll_create1(int __flags) => _native.epoll_create1(__flags);
 
   @override
-  int epoll_ctl(
-          int __epfd, int __op, int __fd, ffi.Pointer<epoll_event> __event) =>
-      _native.epoll_ctl(__epfd, __op, __fd, __event);
+  int epoll_ctl(int __epfd, int __op, int __fd, ffi.Pointer<epoll_event> __event) => _native.epoll_ctl(__epfd, __op, __fd, __event);
 
   @override
-  int epoll_wait(int __epfd, ffi.Pointer<epoll_event> __events, int __maxevents,
-          int __timeout) =>
-      _native.epoll_wait(__epfd, __events, __maxevents, __timeout);
+  int epoll_wait(int __epfd, ffi.Pointer<epoll_event> __events, int __maxevents, int __timeout) => _native.epoll_wait(__epfd, __events, __maxevents, __timeout);
 
   @override
   int ioctl(int __fd, int __request) => _native.ioctl(__fd, __request);
 
   @override
-  int ioctlPointer(int __fd, int __request, ffi.Pointer<ffi.NativeType> argp) =>
-      _native.ioctlPointer(__fd, __request, argp);
+  int ioctlPointer(int __fd, int __request, ffi.Pointer<ffi.NativeType> argp) => _native.ioctlPointer(__fd, __request, argp);
 
   @override
-  int open(ffi.Pointer<ffi.Int8> __file, int __oflag) =>
-      _native.open(__file, __oflag);
+  int open(ffi.Pointer<ffi.Int8> __file, int __oflag) => _native.open(__file, __oflag);
 
   @override
-  int read(int __fd, ffi.Pointer<ffi.Void> __buf, int __nbytes) =>
-      _native.read(__fd, __buf, __nbytes);
+  int read(int __fd, ffi.Pointer<ffi.Void> __buf, int __nbytes) => _native.read(__fd, __buf, __nbytes);
 
   _dart_errno_location __errnoLocation;
   ffi.Pointer<ffi.Int32> get _errnoLocation {
     if (__errnoLocation == null) {
-      __errnoLocation = _dylib.tryLookupFunction(() =>
-          _dylib.lookupFunction<_c_errno_location, _dart_errno_location>(
-              "__errno_location"));
+      __errnoLocation = _dylib.tryLookupFunction(() => _dylib.lookupFunction<_c_errno_location, _dart_errno_location>("__errno_location"));
 
       if (__errnoLocation == null) {
-        __errnoLocation = _dylib.tryLookupFunction(() =>
-            _dylib.lookupFunction<_c_errno_location, _dart_errno_location>(
-                "__errno"));
+        __errnoLocation = _dylib.tryLookupFunction(() => _dylib.lookupFunction<_c_errno_location, _dart_errno_location>("__errno"));
       }
 
       if (__errnoLocation == null) {
-        __errnoLocation = _dylib.tryLookupFunction(() =>
-            _dylib.lookupFunction<_c_errno_location, _dart_errno_location>(
-                "_dl_errno"));
+        __errnoLocation = _dylib.tryLookupFunction(() => _dylib.lookupFunction<_c_errno_location, _dart_errno_location>("_dl_errno"));
       }
 
       if (__errnoLocation == null) {
-        __errnoLocation = _dylib.tryLookupFunction(() =>
-            _dylib.lookupFunction<_c_errno_location, _dart_errno_location>(
-                "__libc_errno"));
+        __errnoLocation = _dylib.tryLookupFunction(() => _dylib.lookupFunction<_c_errno_location, _dart_errno_location>("__libc_errno"));
       }
 
       if (__errnoLocation == null) {
@@ -187,16 +165,11 @@ class LibC implements LibCBase {
   }
 }
 
-T newStruct<T extends ffi.Struct>() {
-  return ffi.allocate<T>().ref;
-}
-
 List<T> listFromArrayHelper<T>(int length, T getElement(int index)) {
   return List.generate(length, getElement, growable: false);
 }
 
-String stringFromInlineArray(int maxLength, int getElement(int index),
-    {Encoding codec = const Utf8Codec(allowMalformed: true)}) {
+String stringFromInlineArray(int maxLength, int getElement(int index), {Encoding codec = const Utf8Codec(allowMalformed: true)}) {
   final list = listFromArrayHelper(maxLength, getElement);
   final indexOfZero = list.indexOf(0);
   final length = indexOfZero == -1 ? maxLength : indexOfZero;
@@ -204,18 +177,14 @@ String stringFromInlineArray(int maxLength, int getElement(int index),
   return codec.decode(list.sublist(0, length));
 }
 
-void writeStringToArrayHelper(
-    String str, int length, void setElement(int index, int value),
-    {Encoding codec = const Utf8Codec(allowMalformed: true)}) {
-  final untruncatedBytes = List.of(codec.encode(str))
-    ..addAll(List.filled(length, 0));
+void writeStringToArrayHelper(String str, int length, void setElement(int index, int value), {Encoding codec = const Utf8Codec(allowMalformed: true)}) {
+  final untruncatedBytes = List.of(codec.encode(str))..addAll(List.filled(length, 0));
 
   untruncatedBytes.take(length).toList().asMap().forEach(setElement);
 }
 
 class LinuxError extends OSError {
-  LinuxError._private([String message, int errno = OSError.noErrorCode])
-      : super(message ?? "", errno);
+  LinuxError._private([String message, int errno = OSError.noErrorCode]) : super(message ?? "", errno);
 
   factory LinuxError([String description, String method, int errno]) {
     final hasErrno = errno != null && errno != OSError.noErrorCode;

@@ -1,12 +1,12 @@
 import 'dart:async';
 import 'dart:io';
-import 'dart:ffi' as ffi;
+import 'dart:ffi';
 import 'dart:isolate';
 
 import 'package:tuple/tuple.dart';
 import 'package:meta/meta.dart';
 import 'package:path/path.dart';
-import 'package:ffi/ffi.dart' as ffi;
+import 'package:ffi/ffi.dart';
 
 import 'bindings.dart';
 
@@ -70,22 +70,20 @@ void _eventIsolateEntry(Tuple2<SendPort, int> args) {
   final sendPort = args.item1;
   final epollFd = args.item2;
 
-  final libc = LibC(ffi.DynamicLibrary.open("libc.so.6"));
+  final libc = LibC(DynamicLibrary.open("libc.so.6"));
 
   final maxEpollEvents = 64;
-  final epollEvents = ffi.allocate<epoll_event>(count: maxEpollEvents);
+  final epollEvents = calloc<epoll_event>(maxEpollEvents);
 
   final maxEvents = 16;
-  final events = ffi.allocate<gpioevent_data>(count: maxEvents);
+  final events = calloc<gpioevent_data>(maxEvents);
 
   while (true) {
-    ok = libc.epoll_wait(
-        epollFd, epollEvents.cast<epoll_event>(), maxEpollEvents, -1);
+    ok = libc.epoll_wait(epollFd, epollEvents.cast<epoll_event>(), maxEpollEvents, -1);
     if (ok < 0) {
-      ffi.free(epollEvents);
-      ffi.free(events);
-      throw LinuxError(
-          "Could not wait for GPIO events", "epoll_wait", libc.errno);
+      calloc.free(epollEvents);
+      calloc.free(events);
+      throw LinuxError("Could not wait for GPIO events", "epoll_wait", libc.errno);
     }
 
     final convertedEvents = <List<int>>[];
@@ -94,23 +92,19 @@ void _eventIsolateEntry(Tuple2<SendPort, int> args) {
       final epollEvent = epollEvents.elementAt(i).ref;
 
       if (epollEvent.events != 0) {
-        ok = libc.read(epollEvent.userdata, events.cast<ffi.Void>(),
-            maxEvents * ffi.sizeOf<gpioevent_data>());
+        ok = libc.read(epollEvent.userdata, events.cast<Void>(), maxEvents * sizeOf<gpioevent_data>());
         if (ok < 0) {
-          ffi.free(epollEvents);
-          ffi.free(events);
-          throw LinuxError("Could not read GPIO events from event line fd",
-              "read", libc.errno);
+          calloc.free(epollEvents);
+          calloc.free(events);
+          throw LinuxError("Could not read GPIO events from event line fd", "read", libc.errno);
         } else if (ok == 0) {
-          libc.epoll_ctl(
-              epollFd, EPOLL_CTL_DEL, epollEvent.userdata, ffi.nullptr);
+          libc.epoll_ctl(epollFd, EPOLL_CTL_DEL, epollEvent.userdata, nullptr);
         }
 
-        final nEventsRead = ok / ffi.sizeOf<gpioevent_data>();
+        final nEventsRead = ok / sizeOf<gpioevent_data>();
         for (var j = 0; j < nEventsRead; j++) {
           final event = events.elementAt(j).ref;
-          convertedEvents
-              .add(<int>[epollEvent.userdata, event.id, event.timestamp]);
+          convertedEvents.add(<int>[epollEvent.userdata, event.id, event.timestamp]);
         }
 
         nReady--;
@@ -125,30 +119,25 @@ void _eventIsolateEntry(Tuple2<SendPort, int> args) {
 
 /// Provides raw access to the platform-side methods.
 class PlatformInterface {
-  PlatformInterface._construct(this.libc, this._numChips, this._chipIndexToFd,
-      this._epollFd, this._eventReceivePort);
+  PlatformInterface._construct(this.libc, this._numChips, this._chipIndexToFd, this._epollFd, this._eventReceivePort);
 
   factory PlatformInterface._private() {
-    final libc = LibC(ffi.DynamicLibrary.open("libc.so.6"));
+    final libc = LibC(DynamicLibrary.open("libc.so.6"));
 
-    final numChips = Directory("/dev")
-        .listSync(followLinks: false, recursive: false)
-        .where((element) => basename(element.path).startsWith("gpiochip"))
-        .length;
+    final numChips = Directory("/dev").listSync(followLinks: false, recursive: false).where((element) => basename(element.path).startsWith("gpiochip")).length;
 
     final chipIndexToFd = <int, int>{};
 
     for (var i = 0; i < numChips; i++) {
-      final pathPtr = ffi.Utf8.toUtf8("/dev/gpiochip$i");
+      final pathPtr = "/dev/gpiochip$i".toNativeUtf8();
 
-      final fd = libc.open(pathPtr.cast<ffi.Int8>(), O_RDWR | O_CLOEXEC);
+      final fd = libc.open(pathPtr.cast<Int8>(), O_RDWR | O_CLOEXEC);
 
-      ffi.free(pathPtr);
+      calloc.free(pathPtr);
 
       if (fd < 0) {
         chipIndexToFd.values.forEach((fd) => libc.close(fd));
-        throw FileSystemException(
-            "Could not open GPIO chip $i", "/dev/gpiochip$i");
+        throw FileSystemException("Could not open GPIO chip $i", "/dev/gpiochip$i");
       }
 
       chipIndexToFd[i] = fd;
@@ -156,16 +145,14 @@ class PlatformInterface {
 
     final epollFd = libc.epoll_create1(0);
     if (epollFd < 0) {
-      throw LinuxError(
-          "Could not create epoll instance", "epoll_create1", libc.errno);
+      throw LinuxError("Could not create epoll instance", "epoll_create1", libc.errno);
     }
 
     final receivePort = ReceivePort();
 
     Isolate.spawn(_eventIsolateEntry, Tuple2(receivePort.sendPort, epollFd));
 
-    return PlatformInterface._construct(
-        libc, numChips, chipIndexToFd, epollFd, receivePort);
+    return PlatformInterface._construct(libc, numChips, chipIndexToFd, epollFd, receivePort);
   }
 
   final LibC libc;
@@ -188,7 +175,7 @@ class PlatformInterface {
     return _instance;
   }
 
-  void _ioctl(int fd, int request, ffi.Pointer argp) {
+  void _ioctl(int fd, int request, Pointer argp) {
     final result = libc.ioctlPointer(fd, request, argp);
     if (result < 0) {
       throw LinuxError("GPIO ioctl failed", "ioctl", libc.errno);
@@ -209,18 +196,13 @@ class PlatformInterface {
 
   Stream<GlobalSignalEvent> get eventStream {
     if (_eventStream == null) {
-      _eventStream =
-          _eventReceivePort.cast<List<List<int>>>().expand((element) {
+      _eventStream = _eventReceivePort.cast<List<List<int>>>().expand((element) {
         // sort with increasing timestamps
         element.sort((a, b) => a[2].compareTo(b[2]));
         return element;
       }).map((list) {
-        final lineHandle = _lineHandleToLineEventFd.entries
-            .singleWhere((e) => e.value == list[0])
-            .key;
-        final edge = list[1] == GPIOEVENT_EVENT_RISING_EDGE
-            ? SignalEdge.rising
-            : SignalEdge.falling;
+        final lineHandle = _lineHandleToLineEventFd.entries.singleWhere((e) => e.value == list[0]).key;
+        final edge = list[1] == GPIOEVENT_EVENT_RISING_EDGE ? SignalEdge.rising : SignalEdge.falling;
         final dateTime = DateTime.fromMicrosecondsSinceEpoch(list[2] ~/ 1000);
 
         return GlobalSignalEvent(lineHandle, SignalEvent(edge, dateTime));
@@ -235,23 +217,16 @@ class PlatformInterface {
   }
 
   Map<String, dynamic> getChipDetails(int chipIndex) {
-    final struct = newStruct<gpiochip_info>();
+    final struct = calloc<gpiochip_info>();
 
     Map<String, dynamic> map;
 
     try {
-      _ioctl(
-          _chipIndexToFd[chipIndex], GPIO_GET_CHIPINFO_IOCTL, struct.addressOf);
+      _ioctl(_chipIndexToFd[chipIndex], GPIO_GET_CHIPINFO_IOCTL, struct);
 
-      map = <String, dynamic>{
-        'name':
-            stringFromInlineArray(struct.name.length, (i) => struct.name[i]),
-        'label':
-            stringFromInlineArray(struct.label.length, (i) => struct.label[i]),
-        'numLines': struct.lines
-      };
+      map = <String, dynamic>{'name': stringFromInlineArray(struct.ref.name.length, (i) => struct.ref.name[i]), 'label': stringFromInlineArray(struct.ref.label.length, (i) => struct.ref.label[i]), 'numLines': struct.ref.lines};
     } finally {
-      ffi.free(struct.addressOf);
+      calloc.free(struct);
     }
 
     return map;
@@ -265,24 +240,23 @@ class PlatformInterface {
     final fd = _chipFdFromLineHandle(lineHandle);
     final offset = _lineIndexFromLineHandle(lineHandle);
 
-    final struct = newStruct<gpioline_info>();
-    struct.line_offset = offset;
+    final struct = calloc<gpioline_info>();
+    struct.ref.line_offset = offset;
 
     LineInfo info;
 
     try {
-      _ioctl(fd, GPIO_GET_LINEINFO_IOCTL, struct.addressOf);
+      _ioctl(fd, GPIO_GET_LINEINFO_IOCTL, struct);
 
-      final isOut = struct.flags & GPIOLINE_FLAG_IS_OUT > 0;
-      final isOpenDrain = struct.flags & GPIOLINE_FLAG_OPEN_DRAIN > 0;
-      final isOpenSource = struct.flags & GPIOLINE_FLAG_OPEN_SOURCE > 0;
-      final isActiveLow = struct.flags & GPIOLINE_FLAG_ACTIVE_LOW > 0;
-      final isKernel = struct.flags & GPIOLINE_FLAG_KERNEL > 0;
+      final isOut = struct.ref.flags & GPIOLINE_FLAG_IS_OUT > 0;
+      final isOpenDrain = struct.ref.flags & GPIOLINE_FLAG_OPEN_DRAIN > 0;
+      final isOpenSource = struct.ref.flags & GPIOLINE_FLAG_OPEN_SOURCE > 0;
+      final isActiveLow = struct.ref.flags & GPIOLINE_FLAG_ACTIVE_LOW > 0;
+      final isKernel = struct.ref.flags & GPIOLINE_FLAG_KERNEL > 0;
 
       info = LineInfo(
-        name: stringFromInlineArray(struct.name.length, (i) => struct.name[i]),
-        consumer: stringFromInlineArray(
-            struct.name.length, (i) => struct.consumer[i]),
+        name: stringFromInlineArray(struct.ref.name.length, (i) => struct.ref.name[i]),
+        consumer: stringFromInlineArray(struct.ref.name.length, (i) => struct.ref.consumer[i]),
         direction: isOut ? LineDirection.output : LineDirection.input,
         outputMode: isOpenDrain
             ? OutputMode.openDrain
@@ -295,21 +269,13 @@ class PlatformInterface {
         isRequested: _requestedLines.contains(lineHandle),
       );
     } finally {
-      ffi.free(struct.addressOf);
+      calloc.free(struct);
     }
 
     return info;
   }
 
-  void requestLine(
-      {@required int lineHandle,
-      @required String consumer,
-      LineDirection direction,
-      OutputMode outputMode,
-      Bias bias,
-      ActiveState activeState = ActiveState.high,
-      Set<SignalEdge> triggers = const {},
-      bool initialValue}) {
+  void requestLine({@required int lineHandle, @required String consumer, LineDirection direction, OutputMode outputMode, Bias bias, ActiveState activeState = ActiveState.high, Set<SignalEdge> triggers = const {}, bool initialValue}) {
     assert(lineHandle != null);
     assert(triggers != null);
     assert(activeState != null);
@@ -333,17 +299,14 @@ class PlatformInterface {
     final offset = _lineIndexFromLineHandle(lineHandle);
 
     if (!isEvent) {
-      final request = newStruct<gpiohandle_request>();
+      final request = calloc<gpiohandle_request>();
 
-      request.lines = 1;
-      request.lineoffsets[0] = offset;
+      request.ref.lines = 1;
+      request.ref.lineoffsets[0] = offset;
 
-      writeStringToArrayHelper(consumer, request.consumer_label.length,
-          (i, v) => request.consumer_label[i] = v);
+      writeStringToArrayHelper(consumer, request.ref.consumer_label.length, (i, v) => request.ref.consumer_label[i] = v);
 
-      request.flags = (direction == LineDirection.input
-              ? GPIOHANDLE_REQUEST_INPUT
-              : GPIOHANDLE_REQUEST_OUTPUT) |
+      request.ref.flags = (direction == LineDirection.input ? GPIOHANDLE_REQUEST_INPUT : GPIOHANDLE_REQUEST_OUTPUT) |
           (outputMode == OutputMode.openDrain
               ? GPIOHANDLE_REQUEST_OPEN_DRAIN
               : outputMode == OutputMode.openSource
@@ -359,23 +322,22 @@ class PlatformInterface {
           (activeState == ActiveState.low ? GPIOHANDLE_REQUEST_ACTIVE_LOW : 0);
 
       if (initialValue != null) {
-        request.default_values[0] = initialValue ? 1 : 0;
+        request.ref.default_values[0] = initialValue ? 1 : 0;
       }
 
       try {
-        _ioctl(fd, GPIO_GET_LINEHANDLE_IOCTL, request.addressOf);
+        _ioctl(fd, GPIO_GET_LINEHANDLE_IOCTL, request);
         _requestedLines.add(lineHandle);
-        _lineHandleToLineHandleFd[lineHandle] = request.fd;
+        _lineHandleToLineHandleFd[lineHandle] = request.ref.fd;
       } finally {
-        ffi.free(request.addressOf);
+        calloc.free(request);
       }
     } else {
-      final request = newStruct<gpioevent_request>();
+      final request = calloc<gpioevent_request>();
 
-      request.lineoffset = offset;
-      writeStringToArrayHelper(consumer, request.consumer_label.length,
-          (i, v) => request.consumer_label[i] = v);
-      request.handleflags = GPIOHANDLE_REQUEST_INPUT |
+      request.ref.lineoffset = offset;
+      writeStringToArrayHelper(consumer, request.ref.consumer_label.length, (i, v) => request.ref.consumer_label[i] = v);
+      request.ref.handleflags = GPIOHANDLE_REQUEST_INPUT |
           (bias == Bias.disable
               ? GPIOHANDLE_REQUEST_BIAS_DISABLE
               : bias == Bias.pullDown
@@ -384,36 +346,34 @@ class PlatformInterface {
                       ? GPIOHANDLE_REQUEST_BIAS_PULL_UP
                       : 0) |
           (activeState == ActiveState.low ? GPIOHANDLE_REQUEST_ACTIVE_LOW : 0);
-      request.eventflags = triggers == {SignalEdge.rising}
+      request.ref.eventflags = triggers == {SignalEdge.rising}
           ? GPIOEVENT_REQUEST_RISING_EDGE
           : triggers == {SignalEdge.falling}
               ? GPIOEVENT_REQUEST_FALLING_EDGE
               : GPIOEVENT_REQUEST_BOTH_EDGES;
 
       try {
-        _ioctl(fd, GPIO_GET_LINEEVENT_IOCTL, request.addressOf);
+        _ioctl(fd, GPIO_GET_LINEEVENT_IOCTL, request);
 
         _requestedLines.add(lineHandle);
-        _lineHandleToLineEventFd[lineHandle] = request.fd;
+        _lineHandleToLineEventFd[lineHandle] = request.ref.fd;
 
-        final epollEvent = newStruct<epoll_event>();
+        final epollEvent = calloc<epoll_event>();
 
-        epollEvent.events = EPOLLIN | EPOLLPRI;
-        epollEvent.userdata = request.fd;
+        epollEvent.ref.events = EPOLLIN | EPOLLPRI;
+        epollEvent.ref.userdata = request.ref.fd;
 
-        final result = libc.epoll_ctl(_epollFd, EPOLL_CTL_ADD, request.fd,
-            epollEvent.addressOf.cast<epoll_event>());
+        final result = libc.epoll_ctl(_epollFd, EPOLL_CTL_ADD, request.ref.fd, epollEvent);
 
-        ffi.free(epollEvent.addressOf);
+        calloc.free(epollEvent);
 
         if (result < 0) {
           final errno = libc.errno;
           releaseLine(lineHandle);
-          throw LinuxError("Could not add GPIO line event fd to epoll instance",
-              "epoll_ctl", errno);
+          throw LinuxError("Could not add GPIO line event fd to epoll instance", "epoll_ctl", errno);
         }
       } finally {
-        ffi.free(request.addressOf);
+        calloc.free(request);
       }
     }
   }
@@ -421,15 +381,11 @@ class PlatformInterface {
   void releaseLine(int lineHandle) {
     assert(_requestedLines.contains(lineHandle));
 
-    final fd = _lineHandleToLineHandleFd[lineHandle] ??
-        _lineHandleToLineEventFd[lineHandle];
+    final fd = _lineHandleToLineHandleFd[lineHandle] ?? _lineHandleToLineEventFd[lineHandle];
     var ok = libc.close(fd);
     var errno = libc.errno;
     if (ok != 0) {
-      throw LinuxError(
-          "Couldn't release line by closing line handle file descriptor.",
-          "close",
-          errno);
+      throw LinuxError("Couldn't release line by closing line handle file descriptor.", "close", errno);
     }
 
     _requestedLines.remove(lineHandle);
@@ -437,13 +393,7 @@ class PlatformInterface {
     _lineHandleToLineEventFd.remove(lineHandle);
   }
 
-  void reconfigureLine(
-      {@required int lineHandle,
-      @required LineDirection direction,
-      OutputMode outputMode,
-      Bias bias,
-      ActiveState activeState = ActiveState.high,
-      bool initialValue}) async {
+  void reconfigureLine({@required int lineHandle, @required LineDirection direction, OutputMode outputMode, Bias bias, ActiveState activeState = ActiveState.high, bool initialValue}) async {
     assert(_requestedLines.contains(lineHandle));
     assert(_lineHandleToLineHandleFd.containsKey(lineHandle));
 
@@ -458,11 +408,9 @@ class PlatformInterface {
       assert(initialValue != null);
     }
 
-    final request = newStruct<gpiohandle_config>();
+    final request = calloc<gpiohandle_config>();
 
-    request.flags = (direction == LineDirection.input
-            ? GPIOHANDLE_REQUEST_INPUT
-            : GPIOHANDLE_REQUEST_OUTPUT) |
+    request.ref.flags = (direction == LineDirection.input ? GPIOHANDLE_REQUEST_INPUT : GPIOHANDLE_REQUEST_OUTPUT) |
         (outputMode == OutputMode.openDrain
             ? GPIOHANDLE_REQUEST_OPEN_DRAIN
             : outputMode == OutputMode.openSource
@@ -478,14 +426,13 @@ class PlatformInterface {
         (activeState == ActiveState.low ? GPIOHANDLE_REQUEST_ACTIVE_LOW : 0);
 
     if (initialValue != null) {
-      request.default_values[0] = initialValue ? 1 : 0;
+      request.ref.default_values[0] = initialValue ? 1 : 0;
     }
 
     try {
-      _ioctl(_lineHandleToLineHandleFd[lineHandle], GPIOHANDLE_SET_CONFIG_IOCTL,
-          request.addressOf);
+      _ioctl(_lineHandleToLineHandleFd[lineHandle], GPIOHANDLE_SET_CONFIG_IOCTL, request);
     } finally {
-      ffi.free(request.addressOf);
+      calloc.free(request);
     }
   }
 
@@ -493,19 +440,18 @@ class PlatformInterface {
     assert(lineHandle != null);
     assert(_requestedLines.contains(lineHandle));
 
-    final fd = _lineHandleToLineHandleFd[lineHandle] ??
-        _lineHandleToLineEventFd[lineHandle];
+    final fd = _lineHandleToLineHandleFd[lineHandle] ?? _lineHandleToLineEventFd[lineHandle];
     assert(fd != null);
 
-    final struct = newStruct<gpiohandle_data>();
+    final struct = calloc<gpiohandle_data>();
 
     bool result;
 
     try {
-      _ioctl(fd, GPIOHANDLE_GET_LINE_VALUES_IOCTL, struct.addressOf);
-      result = struct.values[0] != 0;
+      _ioctl(fd, GPIOHANDLE_GET_LINE_VALUES_IOCTL, struct);
+      result = struct.ref.values[0] != 0;
     } finally {
-      ffi.free(struct.addressOf);
+      calloc.free(struct);
     }
 
     return result;
@@ -516,21 +462,19 @@ class PlatformInterface {
     assert(_requestedLines.contains(lineHandle));
     assert(_lineHandleToLineHandleFd.containsKey(lineHandle));
 
-    final struct = newStruct<gpiohandle_data>();
-    struct.values[0] = value ? 1 : 0;
+    final struct = calloc<gpiohandle_data>();
+    struct.ref.values[0] = value ? 1 : 0;
     try {
-      _ioctl(_lineHandleToLineHandleFd[lineHandle],
-          GPIOHANDLE_SET_LINE_VALUES_IOCTL, struct.addressOf);
+      _ioctl(_lineHandleToLineHandleFd[lineHandle], GPIOHANDLE_SET_LINE_VALUES_IOCTL, struct);
     } finally {
-      ffi.free(struct.addressOf);
+      calloc.free(struct);
     }
   }
 
   bool supportsBias() {
     assert(Platform.isLinux);
 
-    final matches = RegExp("^Linux (\\d*)\\.(\\d*)")
-        .firstMatch(Platform.operatingSystemVersion);
+    final matches = RegExp("^Linux (\\d*)\\.(\\d*)").firstMatch(Platform.operatingSystemVersion);
     if (matches.groupCount == 2) {
       final major = int.parse(matches.group(1));
       final minor = int.parse(matches.group(2));
@@ -547,8 +491,7 @@ class PlatformInterface {
         return false;
       }
     } else {
-      throw StateError(
-          "Could not parse linux release number from `Platform.operatingSystemVersion`: \"${Platform.operatingSystemVersion}\")");
+      throw StateError("Could not parse linux release number from `Platform.operatingSystemVersion`: \"${Platform.operatingSystemVersion}\")");
     }
   }
 
@@ -562,8 +505,7 @@ class PlatformInterface {
 /// Starting-point for querying GPIO chips or lines,
 /// and finding the line you want to control.
 class FlutterGpiod {
-  FlutterGpiod._internal(
-      this.chips, this.supportsBias, this.supportsLineReconfiguration);
+  FlutterGpiod._internal(this.chips, this.supportsBias, this.supportsLineReconfiguration);
 
   static FlutterGpiod _instance;
 
@@ -588,15 +530,12 @@ class FlutterGpiod {
   /// If none exists, one will be constructed.
   static FlutterGpiod get instance {
     if (_instance == null) {
-      final chips = List.generate(PlatformInterface.instance.getNumChips(),
-          (i) => GpioChip._fromIndex(i),
-          growable: false);
+      final chips = List.generate(PlatformInterface.instance.getNumChips(), (i) => GpioChip._fromIndex(i), growable: false);
 
       final bias = PlatformInterface.instance.supportsBias();
       final reconfig = PlatformInterface.instance.supportsLineReconfiguration();
 
-      _instance =
-          FlutterGpiod._internal(List.unmodifiable(chips), bias, reconfig);
+      _instance = FlutterGpiod._internal(List.unmodifiable(chips), bias, reconfig);
     }
 
     return _instance;
@@ -608,9 +547,7 @@ class FlutterGpiod {
   }
 
   Stream<SignalEvent> _onSignalEvent(int lineHandle) {
-    return _onGlobalSignalEvent
-        .where((e) => e.lineHandle == lineHandle)
-        .map((e) => e.signalEvent);
+    return _onGlobalSignalEvent.where((e) => e.lineHandle == lineHandle).map((e) => e.signalEvent);
   }
 }
 
@@ -645,14 +582,9 @@ class GpioChip {
   factory GpioChip._fromIndex(int chipIndex) {
     final details = PlatformInterface.instance.getChipDetails(chipIndex);
 
-    final lines = List.generate(
-        details['numLines'],
-        (i) => GpioLine._fromHandle(
-            PlatformInterface.instance.getLineHandle(chipIndex, i)),
-        growable: false);
+    final lines = List.generate(details['numLines'], (i) => GpioLine._fromHandle(PlatformInterface.instance.getLineHandle(chipIndex, i)), growable: false);
 
-    return GpioChip._(chipIndex, details['name'], details['label'],
-        details['numLines'], List.unmodifiable(lines));
+    return GpioChip._(chipIndex, details['name'], details['label'], details['numLines'], List.unmodifiable(lines));
   }
 
   @override
@@ -703,15 +635,7 @@ class LineInfo {
   /// which maps active (i.e. `line.setValue(true)`) to low voltage and inactive to high voltage.
   final ActiveState activeState;
 
-  const LineInfo(
-      {this.name,
-      this.consumer,
-      this.direction,
-      this.outputMode,
-      this.bias,
-      this.activeState,
-      this.isUsed,
-      this.isRequested});
+  const LineInfo({this.name, this.consumer, this.direction, this.outputMode, this.bias, this.activeState, this.isUsed, this.isRequested});
 
   String toString() {
     final params = <String>[];
@@ -814,8 +738,7 @@ class LineInfo {
 /// // line.release();
 /// ```
 class GpioLine {
-  GpioLine._internal(this._lineHandle, this._requested, this._info,
-      this._triggers, this._value);
+  GpioLine._internal(this._lineHandle, this._requested, this._info, this._triggers, this._value);
 
   final int _lineHandle;
   bool _requested;
@@ -827,8 +750,7 @@ class GpioLine {
     final info = PlatformInterface.instance.getLineInfo(lineHandle);
 
     if (info.isRequested) {
-      return GpioLine._internal(lineHandle, true, info, const {},
-          PlatformInterface.instance.getLineValue(lineHandle));
+      return GpioLine._internal(lineHandle, true, info, const {}, PlatformInterface.instance.getLineValue(lineHandle));
     } else {
       return GpioLine._internal(lineHandle, false, null, const {}, null);
     }
@@ -875,12 +797,8 @@ class GpioLine {
   /// If [FlutterGpiod.supportsBias] is false, [bias] must be `null`,
   /// otherwise a [UnsupportedError] will be thrown.
   ///
-  /// Only a free line can be requested.
-  void requestInput(
-      {String consumer,
-      Bias bias,
-      ActiveState activeState = ActiveState.high,
-      Set<SignalEdge> triggers = const {}}) {
+  /// Only a calloc.free line can be requested.
+  void requestInput({String consumer, Bias bias, ActiveState activeState = ActiveState.high, Set<SignalEdge> triggers = const {}}) {
     ArgumentError.checkNotNull(activeState, "activeState");
     ArgumentError.checkNotNull(triggers, "triggers");
     _checkSupportsBiasValue(bias);
@@ -890,13 +808,7 @@ class GpioLine {
       throw StateError("Can't request line because it is already requested.");
     }
 
-    PlatformInterface.instance.requestLine(
-        lineHandle: _lineHandle,
-        consumer: consumer,
-        direction: LineDirection.input,
-        bias: bias,
-        activeState: activeState,
-        triggers: triggers);
+    PlatformInterface.instance.requestLine(lineHandle: _lineHandle, consumer: consumer, direction: LineDirection.input, bias: bias, activeState: activeState, triggers: triggers);
 
     _info = PlatformInterface.instance.getLineInfo(_lineHandle);
 
@@ -908,13 +820,8 @@ class GpioLine {
   /// If [FlutterGpiod.supportsBias] is false, [bias] must be `null`,
   /// otherwise a [UnsupportedError] will be thrown.
   ///
-  /// Only a free line can be requested.
-  void requestOutput(
-      {String consumer,
-      OutputMode outputMode = OutputMode.pushPull,
-      Bias bias,
-      ActiveState activeState = ActiveState.high,
-      @required bool initialValue}) {
+  /// Only a calloc.free line can be requested.
+  void requestOutput({String consumer, OutputMode outputMode = OutputMode.pushPull, Bias bias, ActiveState activeState = ActiveState.high, @required bool initialValue}) {
     ArgumentError.checkNotNull(outputMode, "outputMode");
     ArgumentError.checkNotNull(activeState, "activeState");
     ArgumentError.checkNotNull(initialValue, "initialValue");
@@ -924,14 +831,7 @@ class GpioLine {
       throw StateError("Can't request line because it is already requested.");
     }
 
-    PlatformInterface.instance.requestLine(
-        lineHandle: _lineHandle,
-        consumer: consumer,
-        direction: LineDirection.output,
-        outputMode: outputMode,
-        bias: bias,
-        activeState: activeState,
-        initialValue: initialValue);
+    PlatformInterface.instance.requestLine(lineHandle: _lineHandle, consumer: consumer, direction: LineDirection.output, outputMode: outputMode, bias: bias, activeState: activeState, initialValue: initialValue);
 
     _info = PlatformInterface.instance.getLineInfo(_lineHandle);
     _value = initialValue;
@@ -940,8 +840,7 @@ class GpioLine {
 
   void _checkSupportsLineReconfiguration() {
     if (!FlutterGpiod._instance.supportsLineReconfiguration) {
-      throw UnsupportedError(
-          "Can't reconfigure line because that's not supported by "
+      throw UnsupportedError("Can't reconfigure line because that's not supported by "
           "the underlying version of libgpiod. "
           "You need to check `FlutterGpiod.supportsLineReconfiguration` "
           "to make sure you can reconfigure.");
@@ -958,8 +857,7 @@ class GpioLine {
   ///
   /// You can't specify triggers here because of platform
   /// limitations.
-  void reconfigureInput(
-      {Bias bias, ActiveState activeState = ActiveState.high}) {
+  void reconfigureInput({Bias bias, ActiveState activeState = ActiveState.high}) {
     ArgumentError.checkNotNull(activeState, "activeState");
     _checkSupportsBiasValue(bias);
     _checkSupportsLineReconfiguration();
@@ -972,11 +870,7 @@ class GpioLine {
       throw StateError("Can't reconfigured line because it is not requested.");
     }
 
-    PlatformInterface.instance.reconfigureLine(
-        lineHandle: _lineHandle,
-        direction: LineDirection.input,
-        bias: bias,
-        activeState: activeState);
+    PlatformInterface.instance.reconfigureLine(lineHandle: _lineHandle, direction: LineDirection.input, bias: bias, activeState: activeState);
 
     _info = PlatformInterface.instance.getLineInfo(_lineHandle);
   }
@@ -988,11 +882,7 @@ class GpioLine {
   ///
   /// This will throw a [UnsupportedError] if
   /// [FlutterGpiod.supportsLineReconfiguration] is false.
-  void reconfigureOutput(
-      {OutputMode outputMode = OutputMode.pushPull,
-      Bias bias,
-      ActiveState activeState = ActiveState.high,
-      @required bool initialValue}) {
+  void reconfigureOutput({OutputMode outputMode = OutputMode.pushPull, Bias bias, ActiveState activeState = ActiveState.high, @required bool initialValue}) {
     ArgumentError.checkNotNull(outputMode, "outputMode");
     _checkSupportsBiasValue(bias);
     ArgumentError.checkNotNull(activeState, "activeState");
@@ -1006,13 +896,7 @@ class GpioLine {
       throw StateError("Can't reconfigured line because it is not requested.");
     }
 
-    PlatformInterface.instance.reconfigureLine(
-        lineHandle: _lineHandle,
-        direction: LineDirection.output,
-        outputMode: outputMode,
-        bias: bias,
-        activeState: activeState,
-        initialValue: initialValue);
+    PlatformInterface.instance.reconfigureLine(lineHandle: _lineHandle, direction: LineDirection.output, outputMode: outputMode, bias: bias, activeState: activeState, initialValue: initialValue);
 
     _value = initialValue;
     _info = PlatformInterface.instance.getLineInfo(_lineHandle);
@@ -1039,13 +923,11 @@ class GpioLine {
     ArgumentError.checkNotNull(value, "value");
 
     if (_requested == false) {
-      throw StateError(
-          "Can't set line value because line is not requested and configured as output.");
+      throw StateError("Can't set line value because line is not requested and configured as output.");
     }
 
     if (_info.direction != LineDirection.output) {
-      throw StateError(
-          "Can't set line value because line is not configured as output.");
+      throw StateError("Can't set line value because line is not configured as output.");
     }
 
     if (_value == value) return;
@@ -1088,8 +970,7 @@ class GpioLine {
   /// like this: `rising`, `rising`, `rising`, `falling`, `rising`,
   /// even though that doesn't seem to make any sense
   /// at first glance.
-  Stream<SignalEvent> get onEvent =>
-      FlutterGpiod.instance._onSignalEvent(_lineHandle);
+  Stream<SignalEvent> get onEvent => FlutterGpiod.instance._onSignalEvent(_lineHandle);
 
   /// Broadcast stream of signal edges.
   ///
