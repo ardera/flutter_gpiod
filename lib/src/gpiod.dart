@@ -80,11 +80,12 @@ void _eventIsolateEntry(Tuple2<SendPort, int> args) {
 
   while (true) {
     ok = libc.epoll_wait(
-        epollFd, epollEvents.cast<epoll_event>(), maxEpollEvents, 0);
+        epollFd, epollEvents.cast<epoll_event>(), maxEpollEvents, -1);
     if (ok < 0) {
       ffi.free(epollEvents);
       ffi.free(events);
-      throw LinuxError("Could not wait for GPIO events", "epoll_wait", libc.errno);
+      throw LinuxError(
+          "Could not wait for GPIO events", "epoll_wait", libc.errno);
     }
 
     final convertedEvents = <List<int>>[];
@@ -98,8 +99,8 @@ void _eventIsolateEntry(Tuple2<SendPort, int> args) {
         if (ok < 0) {
           ffi.free(epollEvents);
           ffi.free(events);
-          throw LinuxError(
-              "Could not read GPIO events from event line fd", "read", libc.errno);
+          throw LinuxError("Could not read GPIO events from event line fd",
+              "read", libc.errno);
         } else if (ok == 0) {
           libc.epoll_ctl(
               epollFd, EPOLL_CTL_DEL, epollEvent.userdata, ffi.nullptr);
@@ -124,8 +125,8 @@ void _eventIsolateEntry(Tuple2<SendPort, int> args) {
 
 /// Provides raw access to the platform-side methods.
 class PlatformInterface {
-  PlatformInterface._construct(this.libc, this._numChips,
-      this._chipIndexToFd, this._epollFd, this._eventReceivePort);
+  PlatformInterface._construct(this.libc, this._numChips, this._chipIndexToFd,
+      this._epollFd, this._eventReceivePort);
 
   factory PlatformInterface._private() {
     final libc = LibC(ffi.DynamicLibrary.open("libc.so.6"));
@@ -161,11 +162,7 @@ class PlatformInterface {
 
     final receivePort = ReceivePort();
 
-    Isolate.spawn(_eventIsolateEntry, Tuple2(receivePort.sendPort, epollFd))
-        .catchError((err, stackTrace) {
-      print(
-          "Could not launch GPIO event listener isolate. $err\nStackTrace: $stackTrace");
-    });
+    Isolate.spawn(_eventIsolateEntry, Tuple2(receivePort.sendPort, epollFd));
 
     return PlatformInterface._construct(
         libc, numChips, chipIndexToFd, epollFd, receivePort);
@@ -211,21 +208,24 @@ class PlatformInterface {
   }
 
   Stream<GlobalSignalEvent> get eventStream {
-    _eventStream ??=
-        _eventReceivePort.cast<List<List<int>>>().expand((element) {
-      element.sort((a, b) => a[2].compareTo(b[2]));
-      return element;
-    }).map((list) {
-      final lineHandle = _lineHandleToLineEventFd.entries
-          .singleWhere((e) => e.value == list[0])
-          .key;
-      final edge = list[1] == GPIOEVENT_EVENT_RISING_EDGE
-          ? SignalEdge.rising
-          : SignalEdge.falling;
-      final dateTime = DateTime.fromMicrosecondsSinceEpoch(list[2] ~/ 1000);
+    if (_eventStream == null) {
+      _eventStream =
+          _eventReceivePort.cast<List<List<int>>>().expand((element) {
+        // sort with increasing timestamps
+        element.sort((a, b) => a[2].compareTo(b[2]));
+        return element;
+      }).map((list) {
+        final lineHandle = _lineHandleToLineEventFd.entries
+            .singleWhere((e) => e.value == list[0])
+            .key;
+        final edge = list[1] == GPIOEVENT_EVENT_RISING_EDGE
+            ? SignalEdge.rising
+            : SignalEdge.falling;
+        final dateTime = DateTime.fromMicrosecondsSinceEpoch(list[2] ~/ 1000);
 
-      return GlobalSignalEvent(lineHandle, SignalEvent(edge, dateTime));
-    }).asBroadcastStream();
+        return GlobalSignalEvent(lineHandle, SignalEvent(edge, dateTime));
+      }).asBroadcastStream();
+    }
 
     return _eventStream;
   }
@@ -286,7 +286,9 @@ class PlatformInterface {
         direction: isOut ? LineDirection.output : LineDirection.input,
         outputMode: isOpenDrain
             ? OutputMode.openDrain
-            : isOpenSource ? OutputMode.openSource : OutputMode.pushPull,
+            : isOpenSource
+                ? OutputMode.openSource
+                : OutputMode.pushPull,
         bias: Bias.disable,
         activeState: isActiveLow ? ActiveState.low : ActiveState.high,
         isUsed: isKernel || _requestedLines.contains(lineHandle),
@@ -351,7 +353,9 @@ class PlatformInterface {
               ? GPIOHANDLE_REQUEST_BIAS_DISABLE
               : bias == Bias.pullDown
                   ? GPIOHANDLE_REQUEST_BIAS_PULL_DOWN
-                  : bias == Bias.pullUp ? GPIOHANDLE_REQUEST_BIAS_PULL_UP : 0) |
+                  : bias == Bias.pullUp
+                      ? GPIOHANDLE_REQUEST_BIAS_PULL_UP
+                      : 0) |
           (activeState == ActiveState.low ? GPIOHANDLE_REQUEST_ACTIVE_LOW : 0);
 
       if (initialValue != null) {
@@ -376,7 +380,9 @@ class PlatformInterface {
               ? GPIOHANDLE_REQUEST_BIAS_DISABLE
               : bias == Bias.pullDown
                   ? GPIOHANDLE_REQUEST_BIAS_PULL_DOWN
-                  : bias == Bias.pullUp ? GPIOHANDLE_REQUEST_BIAS_PULL_UP : 0) |
+                  : bias == Bias.pullUp
+                      ? GPIOHANDLE_REQUEST_BIAS_PULL_UP
+                      : 0) |
           (activeState == ActiveState.low ? GPIOHANDLE_REQUEST_ACTIVE_LOW : 0);
       request.eventflags = triggers == {SignalEdge.rising}
           ? GPIOEVENT_REQUEST_RISING_EDGE
@@ -403,11 +409,8 @@ class PlatformInterface {
         if (result < 0) {
           final errno = libc.errno;
           releaseLine(lineHandle);
-          throw LinuxError(
-            "Could not add GPIO line event fd to epoll instance",
-            "epoll_ctl",
-            errno
-          );
+          throw LinuxError("Could not add GPIO line event fd to epoll instance",
+              "epoll_ctl", errno);
         }
       } finally {
         ffi.free(request.addressOf);
@@ -418,7 +421,16 @@ class PlatformInterface {
   void releaseLine(int lineHandle) {
     assert(_requestedLines.contains(lineHandle));
 
-    libc.close(_lineHandleToLineHandleFd[lineHandle]);
+    final fd = _lineHandleToLineHandleFd[lineHandle] ??
+        _lineHandleToLineEventFd[lineHandle];
+    var ok = libc.close(fd);
+    var errno = libc.errno;
+    if (ok != 0) {
+      throw LinuxError(
+          "Couldn't release line by closing line handle file descriptor.",
+          "close",
+          errno);
+    }
 
     _requestedLines.remove(lineHandle);
     _lineHandleToLineHandleFd.remove(lineHandle);
@@ -460,7 +472,9 @@ class PlatformInterface {
             ? GPIOHANDLE_REQUEST_BIAS_DISABLE
             : bias == Bias.pullDown
                 ? GPIOHANDLE_REQUEST_BIAS_PULL_DOWN
-                : bias == Bias.pullUp ? GPIOHANDLE_REQUEST_BIAS_PULL_UP : 0) |
+                : bias == Bias.pullUp
+                    ? GPIOHANDLE_REQUEST_BIAS_PULL_UP
+                    : 0) |
         (activeState == ActiveState.low ? GPIOHANDLE_REQUEST_ACTIVE_LOW : 0);
 
     if (initialValue != null) {
@@ -574,14 +588,12 @@ class FlutterGpiod {
   /// If none exists, one will be constructed.
   static FlutterGpiod get instance {
     if (_instance == null) {
-      final chips = List.generate(
-          PlatformInterface.instance.getNumChips(),
+      final chips = List.generate(PlatformInterface.instance.getNumChips(),
           (i) => GpioChip._fromIndex(i),
           growable: false);
 
       final bias = PlatformInterface.instance.supportsBias();
-      final reconfig =
-          PlatformInterface.instance.supportsLineReconfiguration();
+      final reconfig = PlatformInterface.instance.supportsLineReconfiguration();
 
       _instance =
           FlutterGpiod._internal(List.unmodifiable(chips), bias, reconfig);
@@ -620,7 +632,7 @@ class GpioChip {
   ///
   /// This is the hardware label of the underlying GPIO device.
   /// The main GPIO chip of the Raspberry Pi 4 has the label
-  /// `brcm2835-pinctrl` for example.
+  /// `pinctrl-bcm2835` for example.
   final String label;
 
   final int _numLines;
@@ -631,8 +643,7 @@ class GpioChip {
   GpioChip._(this.index, this.name, this.label, this._numLines, this.lines);
 
   factory GpioChip._fromIndex(int chipIndex) {
-    final details =
-        PlatformInterface.instance.getChipDetails(chipIndex);
+    final details = PlatformInterface.instance.getChipDetails(chipIndex);
 
     final lines = List.generate(
         details['numLines'],
