@@ -187,10 +187,6 @@ class LibC implements LibCBase {
   }
 }
 
-T newStruct<T extends ffi.Struct>() {
-  return ffi.allocate<T>().ref;
-}
-
 List<T> listFromArrayHelper<T>(int length, T getElement(int index)) {
   return List.generate(length, getElement, growable: false);
 }

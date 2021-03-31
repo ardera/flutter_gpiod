@@ -1,12 +1,12 @@
 import 'dart:async';
 import 'dart:io';
-import 'dart:ffi' as ffi;
+import 'dart:ffi';
 import 'dart:isolate';
 
 import 'package:tuple/tuple.dart';
 import 'package:meta/meta.dart';
 import 'package:path/path.dart';
-import 'package:ffi/ffi.dart' as ffi;
+import 'package:ffi/ffi.dart';
 
 import 'bindings.dart';
 
@@ -70,20 +70,20 @@ void _eventIsolateEntry(Tuple2<SendPort, int> args) {
   final sendPort = args.item1;
   final epollFd = args.item2;
 
-  final libc = LibC(ffi.DynamicLibrary.open("libc.so.6"));
+  final libc = LibC(DynamicLibrary.open("libc.so.6"));
 
   final maxEpollEvents = 64;
-  final epollEvents = ffi.allocate<epoll_event>(count: maxEpollEvents);
+  final epollEvents = calloc<epoll_event>(maxEpollEvents);
 
   final maxEvents = 16;
-  final events = ffi.allocate<gpioevent_data>(count: maxEvents);
+  final events = calloc<gpioevent_data>(maxEvents);
 
   while (true) {
     ok = libc.epoll_wait(
         epollFd, epollEvents.cast<epoll_event>(), maxEpollEvents, -1);
     if (ok < 0) {
-      ffi.free(epollEvents);
-      ffi.free(events);
+      calloc.free(epollEvents);
+      calloc.free(events);
       throw LinuxError(
           "Could not wait for GPIO events", "epoll_wait", libc.errno);
     }
@@ -94,19 +94,18 @@ void _eventIsolateEntry(Tuple2<SendPort, int> args) {
       final epollEvent = epollEvents.elementAt(i).ref;
 
       if (epollEvent.events != 0) {
-        ok = libc.read(epollEvent.userdata, events.cast<ffi.Void>(),
-            maxEvents * ffi.sizeOf<gpioevent_data>());
+        ok = libc.read(epollEvent.userdata, events.cast<Void>(),
+            maxEvents * sizeOf<gpioevent_data>());
         if (ok < 0) {
-          ffi.free(epollEvents);
-          ffi.free(events);
+          calloc.free(epollEvents);
+          calloc.free(events);
           throw LinuxError("Could not read GPIO events from event line fd",
               "read", libc.errno);
         } else if (ok == 0) {
-          libc.epoll_ctl(
-              epollFd, EPOLL_CTL_DEL, epollEvent.userdata, ffi.nullptr);
+          libc.epoll_ctl(epollFd, EPOLL_CTL_DEL, epollEvent.userdata, nullptr);
         }
 
-        final nEventsRead = ok / ffi.sizeOf<gpioevent_data>();
+        final nEventsRead = ok / sizeOf<gpioevent_data>();
         for (var j = 0; j < nEventsRead; j++) {
           final event = events.elementAt(j).ref;
           convertedEvents
@@ -129,7 +128,7 @@ class PlatformInterface {
       this._epollFd, this._eventReceivePort);
 
   factory PlatformInterface._private() {
-    final libc = LibC(ffi.DynamicLibrary.open("libc.so.6"));
+    final libc = LibC(DynamicLibrary.open("libc.so.6"));
 
     final numChips = Directory("/dev")
         .listSync(followLinks: false, recursive: false)
@@ -139,11 +138,11 @@ class PlatformInterface {
     final chipIndexToFd = <int, int>{};
 
     for (var i = 0; i < numChips; i++) {
-      final pathPtr = ffi.Utf8.toUtf8("/dev/gpiochip$i");
+      final pathPtr = "/dev/gpiochip$i".toNativeUtf8();
 
-      final fd = libc.open(pathPtr.cast<ffi.Int8>(), O_RDWR | O_CLOEXEC);
+      final fd = libc.open(pathPtr.cast<Int8>(), O_RDWR | O_CLOEXEC);
 
-      ffi.free(pathPtr);
+      calloc.free(pathPtr);
 
       if (fd < 0) {
         chipIndexToFd.values.forEach((fd) => libc.close(fd));
@@ -188,7 +187,7 @@ class PlatformInterface {
     return _instance;
   }
 
-  void _ioctl(int fd, int request, ffi.Pointer argp) {
+  void _ioctl(int fd, int request, Pointer argp) {
     final result = libc.ioctlPointer(fd, request, argp);
     if (result < 0) {
       throw LinuxError("GPIO ioctl failed", "ioctl", libc.errno);
@@ -235,23 +234,22 @@ class PlatformInterface {
   }
 
   Map<String, dynamic> getChipDetails(int chipIndex) {
-    final struct = newStruct<gpiochip_info>();
+    final struct = calloc<gpiochip_info>();
 
     Map<String, dynamic> map;
 
     try {
-      _ioctl(
-          _chipIndexToFd[chipIndex], GPIO_GET_CHIPINFO_IOCTL, struct.addressOf);
+      _ioctl(_chipIndexToFd[chipIndex], GPIO_GET_CHIPINFO_IOCTL, struct);
 
       map = <String, dynamic>{
-        'name':
-            stringFromInlineArray(struct.name.length, (i) => struct.name[i]),
-        'label':
-            stringFromInlineArray(struct.label.length, (i) => struct.label[i]),
-        'numLines': struct.lines
+        'name': stringFromInlineArray(
+            struct.ref.name.length, (i) => struct.ref.name[i]),
+        'label': stringFromInlineArray(
+            struct.ref.label.length, (i) => struct.ref.label[i]),
+        'numLines': struct.ref.lines
       };
     } finally {
-      ffi.free(struct.addressOf);
+      calloc.free(struct);
     }
 
     return map;
@@ -265,24 +263,25 @@ class PlatformInterface {
     final fd = _chipFdFromLineHandle(lineHandle);
     final offset = _lineIndexFromLineHandle(lineHandle);
 
-    final struct = newStruct<gpioline_info>();
-    struct.line_offset = offset;
+    final struct = calloc<gpioline_info>();
+    struct.ref.line_offset = offset;
 
     LineInfo info;
 
     try {
-      _ioctl(fd, GPIO_GET_LINEINFO_IOCTL, struct.addressOf);
+      _ioctl(fd, GPIO_GET_LINEINFO_IOCTL, struct);
 
-      final isOut = struct.flags & GPIOLINE_FLAG_IS_OUT > 0;
-      final isOpenDrain = struct.flags & GPIOLINE_FLAG_OPEN_DRAIN > 0;
-      final isOpenSource = struct.flags & GPIOLINE_FLAG_OPEN_SOURCE > 0;
-      final isActiveLow = struct.flags & GPIOLINE_FLAG_ACTIVE_LOW > 0;
-      final isKernel = struct.flags & GPIOLINE_FLAG_KERNEL > 0;
+      final isOut = struct.ref.flags & GPIOLINE_FLAG_IS_OUT > 0;
+      final isOpenDrain = struct.ref.flags & GPIOLINE_FLAG_OPEN_DRAIN > 0;
+      final isOpenSource = struct.ref.flags & GPIOLINE_FLAG_OPEN_SOURCE > 0;
+      final isActiveLow = struct.ref.flags & GPIOLINE_FLAG_ACTIVE_LOW > 0;
+      final isKernel = struct.ref.flags & GPIOLINE_FLAG_KERNEL > 0;
 
       info = LineInfo(
-        name: stringFromInlineArray(struct.name.length, (i) => struct.name[i]),
+        name: stringFromInlineArray(
+            struct.ref.name.length, (i) => struct.ref.name[i]),
         consumer: stringFromInlineArray(
-            struct.name.length, (i) => struct.consumer[i]),
+            struct.ref.name.length, (i) => struct.ref.consumer[i]),
         direction: isOut ? LineDirection.output : LineDirection.input,
         outputMode: isOpenDrain
             ? OutputMode.openDrain
@@ -295,7 +294,7 @@ class PlatformInterface {
         isRequested: _requestedLines.contains(lineHandle),
       );
     } finally {
-      ffi.free(struct.addressOf);
+      calloc.free(struct);
     }
 
     return info;
@@ -333,15 +332,15 @@ class PlatformInterface {
     final offset = _lineIndexFromLineHandle(lineHandle);
 
     if (!isEvent) {
-      final request = newStruct<gpiohandle_request>();
+      final request = calloc<gpiohandle_request>();
 
-      request.lines = 1;
-      request.lineoffsets[0] = offset;
+      request.ref.lines = 1;
+      request.ref.lineoffsets[0] = offset;
 
-      writeStringToArrayHelper(consumer, request.consumer_label.length,
-          (i, v) => request.consumer_label[i] = v);
+      writeStringToArrayHelper(consumer, request.ref.consumer_label.length,
+          (i, v) => request.ref.consumer_label[i] = v);
 
-      request.flags = (direction == LineDirection.input
+      request.ref.flags = (direction == LineDirection.input
               ? GPIOHANDLE_REQUEST_INPUT
               : GPIOHANDLE_REQUEST_OUTPUT) |
           (outputMode == OutputMode.openDrain
@@ -359,23 +358,23 @@ class PlatformInterface {
           (activeState == ActiveState.low ? GPIOHANDLE_REQUEST_ACTIVE_LOW : 0);
 
       if (initialValue != null) {
-        request.default_values[0] = initialValue ? 1 : 0;
+        request.ref.default_values[0] = initialValue ? 1 : 0;
       }
 
       try {
-        _ioctl(fd, GPIO_GET_LINEHANDLE_IOCTL, request.addressOf);
+        _ioctl(fd, GPIO_GET_LINEHANDLE_IOCTL, request);
         _requestedLines.add(lineHandle);
-        _lineHandleToLineHandleFd[lineHandle] = request.fd;
+        _lineHandleToLineHandleFd[lineHandle] = request.ref.fd;
       } finally {
-        ffi.free(request.addressOf);
+        calloc.free(request);
       }
     } else {
-      final request = newStruct<gpioevent_request>();
+      final request = calloc<gpioevent_request>();
 
-      request.lineoffset = offset;
-      writeStringToArrayHelper(consumer, request.consumer_label.length,
-          (i, v) => request.consumer_label[i] = v);
-      request.handleflags = GPIOHANDLE_REQUEST_INPUT |
+      request.ref.lineoffset = offset;
+      writeStringToArrayHelper(consumer, request.ref.consumer_label.length,
+          (i, v) => request.ref.consumer_label[i] = v);
+      request.ref.handleflags = GPIOHANDLE_REQUEST_INPUT |
           (bias == Bias.disable
               ? GPIOHANDLE_REQUEST_BIAS_DISABLE
               : bias == Bias.pullDown
@@ -384,27 +383,27 @@ class PlatformInterface {
                       ? GPIOHANDLE_REQUEST_BIAS_PULL_UP
                       : 0) |
           (activeState == ActiveState.low ? GPIOHANDLE_REQUEST_ACTIVE_LOW : 0);
-      request.eventflags = triggers == {SignalEdge.rising}
+      request.ref.eventflags = triggers == {SignalEdge.rising}
           ? GPIOEVENT_REQUEST_RISING_EDGE
           : triggers == {SignalEdge.falling}
               ? GPIOEVENT_REQUEST_FALLING_EDGE
               : GPIOEVENT_REQUEST_BOTH_EDGES;
 
       try {
-        _ioctl(fd, GPIO_GET_LINEEVENT_IOCTL, request.addressOf);
+        _ioctl(fd, GPIO_GET_LINEEVENT_IOCTL, request);
 
         _requestedLines.add(lineHandle);
-        _lineHandleToLineEventFd[lineHandle] = request.fd;
+        _lineHandleToLineEventFd[lineHandle] = request.ref.fd;
 
-        final epollEvent = newStruct<epoll_event>();
+        final epollEvent = calloc<epoll_event>();
 
-        epollEvent.events = EPOLLIN | EPOLLPRI;
-        epollEvent.userdata = request.fd;
+        epollEvent.ref.events = EPOLLIN | EPOLLPRI;
+        epollEvent.ref.userdata = request.ref.fd;
 
-        final result = libc.epoll_ctl(_epollFd, EPOLL_CTL_ADD, request.fd,
-            epollEvent.addressOf.cast<epoll_event>());
+        final result =
+            libc.epoll_ctl(_epollFd, EPOLL_CTL_ADD, request.ref.fd, epollEvent);
 
-        ffi.free(epollEvent.addressOf);
+        calloc.free(epollEvent);
 
         if (result < 0) {
           final errno = libc.errno;
@@ -413,7 +412,7 @@ class PlatformInterface {
               "epoll_ctl", errno);
         }
       } finally {
-        ffi.free(request.addressOf);
+        calloc.free(request);
       }
     }
   }
@@ -458,9 +457,9 @@ class PlatformInterface {
       assert(initialValue != null);
     }
 
-    final request = newStruct<gpiohandle_config>();
+    final request = calloc<gpiohandle_config>();
 
-    request.flags = (direction == LineDirection.input
+    request.ref.flags = (direction == LineDirection.input
             ? GPIOHANDLE_REQUEST_INPUT
             : GPIOHANDLE_REQUEST_OUTPUT) |
         (outputMode == OutputMode.openDrain
@@ -478,14 +477,14 @@ class PlatformInterface {
         (activeState == ActiveState.low ? GPIOHANDLE_REQUEST_ACTIVE_LOW : 0);
 
     if (initialValue != null) {
-      request.default_values[0] = initialValue ? 1 : 0;
+      request.ref.default_values[0] = initialValue ? 1 : 0;
     }
 
     try {
       _ioctl(_lineHandleToLineHandleFd[lineHandle], GPIOHANDLE_SET_CONFIG_IOCTL,
-          request.addressOf);
+          request);
     } finally {
-      ffi.free(request.addressOf);
+      calloc.free(request);
     }
   }
 
@@ -497,15 +496,15 @@ class PlatformInterface {
         _lineHandleToLineEventFd[lineHandle];
     assert(fd != null);
 
-    final struct = newStruct<gpiohandle_data>();
+    final struct = calloc<gpiohandle_data>();
 
     bool result;
 
     try {
-      _ioctl(fd, GPIOHANDLE_GET_LINE_VALUES_IOCTL, struct.addressOf);
-      result = struct.values[0] != 0;
+      _ioctl(fd, GPIOHANDLE_GET_LINE_VALUES_IOCTL, struct);
+      result = struct.ref.values[0] != 0;
     } finally {
-      ffi.free(struct.addressOf);
+      calloc.free(struct);
     }
 
     return result;
@@ -516,13 +515,13 @@ class PlatformInterface {
     assert(_requestedLines.contains(lineHandle));
     assert(_lineHandleToLineHandleFd.containsKey(lineHandle));
 
-    final struct = newStruct<gpiohandle_data>();
-    struct.values[0] = value ? 1 : 0;
+    final struct = calloc<gpiohandle_data>();
+    struct.ref.values[0] = value ? 1 : 0;
     try {
       _ioctl(_lineHandleToLineHandleFd[lineHandle],
-          GPIOHANDLE_SET_LINE_VALUES_IOCTL, struct.addressOf);
+          GPIOHANDLE_SET_LINE_VALUES_IOCTL, struct);
     } finally {
-      ffi.free(struct.addressOf);
+      calloc.free(struct);
     }
   }
 
@@ -875,7 +874,7 @@ class GpioLine {
   /// If [FlutterGpiod.supportsBias] is false, [bias] must be `null`,
   /// otherwise a [UnsupportedError] will be thrown.
   ///
-  /// Only a free line can be requested.
+  /// Only a calloc.free line can be requested.
   void requestInput(
       {String consumer,
       Bias bias,
@@ -908,7 +907,7 @@ class GpioLine {
   /// If [FlutterGpiod.supportsBias] is false, [bias] must be `null`,
   /// otherwise a [UnsupportedError] will be thrown.
   ///
-  /// Only a free line can be requested.
+  /// Only a calloc.free line can be requested.
   void requestOutput(
       {String consumer,
       OutputMode outputMode = OutputMode.pushPull,

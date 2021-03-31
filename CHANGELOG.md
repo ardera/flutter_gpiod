@@ -1,3 +1,7 @@
+## 0.3.2
+
+*updated and adapted to ffi 1.0.0 
+
 ## 0.3.1
 
 * fix docs for `GpioChip.label`
